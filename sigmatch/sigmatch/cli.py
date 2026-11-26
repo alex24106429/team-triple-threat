@@ -27,9 +27,9 @@ from .rules import (
     load_rules,
 )
 from .sources import (
+    EtwSource,
     SourceError,
     evtx_events,
-    live_events,
     replay_events,
 )
 
@@ -137,20 +137,25 @@ def _build_parser() -> argparse.ArgumentParser:
     live = subparsers.add_parser(
         "live",
         parents=[common],
-        help="Subscribe to the live Sysmon event log.",
+        help="Follow the live Sysmon ETW provider.",
     )
-    live.add_argument("--channel", default=SYSMON_CHANNEL, help="Event log channel.")
+    live.add_argument(
+        "--channel",
+        default=SYSMON_CHANNEL,
+        help="Sysmon channel (ETW consumption is fixed to the Sysmon provider).",
+    )
     live.add_argument(
         "--query",
         default="*",
-        help="Windows Event Log XPath query (default: *).",
+        help="Event Log XPath filter applied to --backfill only (default: *).",
     )
     live.add_argument(
         "--backfill",
         type=int,
         default=0,
         metavar="N",
-        help="Process the last N historical events before following live events.",
+        help="Process the last N events from the Sysmon log before following live "
+        "ETW events (needs pywin32 and admin rights).",
     )
     live.add_argument(
         "--duration",
@@ -329,7 +334,7 @@ def _run(
             if duration is not None and time.monotonic() - started >= duration:
                 break
             try:
-                event = parse_event_any(raw)
+                event = raw if isinstance(raw, SysmonEvent) else parse_event_any(raw)
             except EventParseError as exc:
                 stats["parse_errors"] += 1
                 print(f"[sigmatch] parse error: {exc}", file=sys.stderr)
@@ -371,20 +376,26 @@ def _run(
 
 
 def _cmd_live(args: argparse.Namespace) -> int:
-    _, ruleset, _ = _load(args)
+    source = EtwSource(
+        args.channel,
+        backfill=args.backfill,
+        query=args.query,
+        duration=args.duration,
+    )
     try:
-        events = live_events(
-            args.channel,
-            backfill=args.backfill,
-            query=args.query,
-            duration=args.duration,
-        )
-        return _run(events, ruleset, args, duration=args.duration)
+        # Start the trace session first: the ETW consumer drains buffers on its
+        # own thread, so events written while rules are compiled are queued
+        # instead of being missed (the old EventLog subscription dropped them).
+        source.start()
+        _, ruleset, _ = _load(args)
+        return _run(source, ruleset, args, duration=args.duration)
     except SourceError as exc:
         print(f"[sigmatch] {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130
+    finally:
+        source.close()
 
 
 def _cmd_evtx(args: argparse.Namespace) -> int:

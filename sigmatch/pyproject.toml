@@ -16,6 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 gui = ["PyQt6>=6.7"]
+# `sigmatch live` auto-installs this; the extra is for offline/pre-seeded installs.
+etw = ["pyetwkit>=3.2"]
 
 [project.scripts]
 sigmatch = "sigmatch.cli:main"

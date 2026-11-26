@@ -1,18 +1,17 @@
 # sigmatch
 
 `sigmatch` matches [SigmaHQ](https://github.com/SigmaHQ/sigma) rules against
-Microsoft Sysmon events in real time.  It reads the
-`Microsoft-Windows-Sysmon/Operational` event log through a Windows Event Log
-pull subscription, parses each event's XML, and evaluates the applicable Sigma
-detections locally.
+Microsoft Sysmon events in real time.  It consumes the Sysmon ETW provider
+(`Microsoft-Windows-Sysmon`) through its own real-time trace session, decodes
+each event with TDH, and evaluates the applicable Sigma detections locally.
 
 It is a matching engine, not a converter: rules are evaluated directly and
 alerts are emitted as text or JSONL.
 
 ## Features
 
-* Live Sysmon event subscription (`live`), `.evtx` replay (`evtx`), and
-  XML/JSON replay (`replay`).
+* Live Sysmon ETW consumption (`live`) with ~10-25 ms reaction time,
+  `.evtx` replay (`evtx`), and XML/JSON replay (`replay`).
 * Loads `sigma/rules` (and optionally the emerging-threats, threat-hunting,
   compliance and DFIR collections).
 * Maps Sigma Windows logsource categories to Sysmon event IDs.
@@ -25,6 +24,9 @@ alerts are emitted as text or JSONL.
   `utf16*`, and `expand`.
 * Case-insensitive string matching by default; Sigma `*`/`?` wildcards and
   backslash escaping.
+* ETW events are normalised to the exact EventLog XML field form
+  (`GrantedAccess`/`LogonId` as `0x...` hex, braced GUIDs) so rules behave
+  identically on both paths.
 * Optional process-creation cache (`--enrich`) that adds
   `CommandLine`/`ParentImage`/`ParentCommandLine` and source/target context to
   events that do not carry those fields (Sigma "addon" fields).
@@ -43,8 +45,10 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-Live and EVTX reading need `pywin32`. If it is missing, sigmatch installs it
-automatically with pip. If Sysmon is not installed, sigmatch downloads it from
+Live reading needs `pyetwkit` (Sysmon ETW provider; prebuilt wheels for 64-bit
+CPython 3.10-3.14). If it is missing, sigmatch installs it automatically with
+pip. EVTX replay and `--backfill` additionally need `pywin32`, which is
+installed automatically the same way. If Sysmon is not installed, sigmatch downloads it from
 Microsoft Sysinternals, installs it with `config/sysmon-sigmatch.xml`, and
 starts the service. Those steps need administrator rights, and failures are
 reported with manual installation instructions.
@@ -81,7 +85,7 @@ sigmatch-gui --rules Z:\sigma
 ```
 
 The UI requests administrator rights automatically through User Account Control,
-because reading `Microsoft-Windows-Sysmon/Operational` requires elevation.  Use
+because starting a Sysmon ETW trace session requires elevation.  Use
 `--no-elevate` only for development; live reading will normally fail without
 administrator rights.  If the rules cannot be found or the Sysmon channel is
 unavailable, the window shows an inline message with a Retry button.
@@ -215,8 +219,41 @@ against all Sysmon events.
   files invalidate it automatically.  A warm start takes well under a second.
   Set `SIGMATCH_RULE_CACHE=0` to bypass the cache, or
   `SIGMATCH_RULE_CACHE_DIR` to put it somewhere else.
-* Live events written while rules are loading are not replayed; use
-  `--backfill N` if you need recent history.
+* `live` starts its ETW session before rules are compiled, so events written
+  during loading are queued and matched instead of being dropped.
+* ETW has no `EventRecordID` (the EventLog service assigns it), so JSON alerts
+  from `live` carry `"EventRecordID": null` and text alerts omit `record=`.
+  No shipped SigmaHQ rule references that field.
+* `Security_UserID` comes from the EventLog XML header and is not part of the
+  Sysmon ETW payload; no shipped rule references it either.
+* `--query` is an EventLog XPath filter, so it only applies to `--backfill`;
+  ETW has no equivalent and filtering happens after matching.
+* `--backfill N` reads recent history from the Sysmon event log (pywin32), then
+  switches to ETW.  Events written between session start and the backfill
+  query can appear twice.
+* The desktop UI reconstructs EventLog-style XML for ETW events in the raw
+  view, because ETW events have no source XML document.
+
+## Why ETW (measured)
+
+The EventLog service publishes channel records in batches: a subscription sees
+an event ~250-485 ms (p50) after it is written, with a tail beyond 1 s.  ETW
+delivers each event as Sysmon writes it.  Measured on the same triggers
+(`cmd.exe /cwhoami`, Sysmon 15.x, Windows 11 VM):
+
+| Path | transport (write -> consumer) | process create -> alert |
+| --- | --- | --- |
+| EventLog `EvtSubscribe` | p50 250-485 ms, max >1 s | p50 ~484 ms |
+| Sysmon ETW | p50 13 ms (min 4, max 17) | p50 ~25 ms, max ~32 ms |
+
+A burst of 300 triggers (561 events/s delivered) matched every event with
+`lost=0`.  Rule matching itself is ~8 ms per process-create event (1,194 rules
+apply to event ID 1), so it is now a comparable share of the total.
+
+`pyetwkit.next_event_timeout()` holds the GIL for the whole timeout, which
+starves other Python threads (a 5 ms sleeper became a 203 ms sleeper with a
+200 ms timeout).  `sigmatch` therefore polls with `try_next_event()` and sleeps
+in Python, which releases the GIL.
 
 ## Development
 

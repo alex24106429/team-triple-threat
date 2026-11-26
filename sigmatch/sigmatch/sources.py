@@ -1,17 +1,35 @@
-"""Event sources: live Sysmon Event Log subscription, .evtx files and replay."""
+"""Event sources: live Sysmon ETW consumption, .evtx files and replay.
+
+Live events come from the Sysmon ETW provider (pyetwkit).  The EventLog
+service publishes channel records in batches (hundreds of milliseconds),
+while ETW delivers them as Sysmon writes them (~13 ms measured).
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
-from .bootstrap import BootstrapError, ensure_pywin32, ensure_sysmon
-from .events import SYSMON_CHANNEL
+from .bootstrap import (
+    BootstrapError,
+    ensure_pywin32,
+    ensure_pyetwkit,
+    ensure_sysmon,
+)
+from .events import (
+    SYSMON_CHANNEL,
+    SYSMON_PROVIDER,
+    SysmonEvent,
+    event_from_etw,
+    parse_event_any,
+)
 
 
 class SourceError(Exception):
@@ -68,6 +86,185 @@ def _is_no_more_events(exc: Exception) -> bool:
     )
 
 
+SYSMON_PROVIDER_GUID = "{5770385F-C22A-43E0-BF4C-06F5698FFBD9}"
+
+# Sysmon writes its Operational channel events with this keyword.
+SYSMON_OPERATIONAL_KEYWORD = 0x8000000000000000
+_TRACE_LEVEL_INFORMATION = 4
+
+# pyetwkit's next_event_timeout() does not release the GIL while it waits, so a
+# poll of 200 ms blocks every other Python thread for 200 ms.  Polling without
+# blocking and sleeping in Python keeps the GIL free (measured: 0.2 ms jitter on
+# a 5 ms sleeper thread vs 200 ms with next_event_timeout).
+ETW_POLL_INTERVAL = 0.001
+
+
+def _etw_types():
+    try:
+        return ensure_pyetwkit()
+    except BootstrapError as exc:  # pragma: no cover - Windows-only dependency
+        raise SourceError(str(exc)) from exc
+
+
+class EtwSource:
+    """Real-time Sysmon events consumed from the Sysmon ETW provider.
+
+    Runs its own real-time trace session (``StartTraceW`` + ``EnableTraceEx2``
+    through pyetwkit) instead of subscribing to the EventLog channel.  ETW
+    delivers each event as soon as Sysmon writes it, whereas the EventLog
+    service publishes channel records in batches (measured p50 ~250-485 ms,
+    tail >1 s on this VM); the ETW path measures p50 ~13 ms end to end.
+
+    ``start()`` and iteration are separate so events can be buffered while
+    rules are still being compiled (the Rust consumer thread drains ETW
+    independently of Python, so nothing is lost and there is no blind spot).
+    """
+
+    def __init__(
+        self,
+        channel: str = SYSMON_CHANNEL,
+        *,
+        backfill: int = 0,
+        query: str = "*",
+        stop_event: threading.Event | None = None,
+        duration: float | None = None,
+        poll_interval: float = ETW_POLL_INTERVAL,
+        session_name: str | None = None,
+    ) -> None:
+        self._channel = channel
+        self._backfill = backfill
+        self._query = query
+        self._stop_event = stop_event
+        self._duration = duration
+        self._poll_interval = poll_interval
+        self._session_name = session_name
+        self._session = None
+        self._computer = ""
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self, on_subscribe: Callable[[], None] | None = None) -> None:
+        """Create the trace session and enable the Sysmon provider on it."""
+
+        if sys.platform != "win32":
+            raise SourceError("live Sysmon events are only available on Windows")
+        if self._channel.casefold() != SYSMON_CHANNEL.casefold():
+            raise SourceError(
+                f"live ETW consumption only supports {SYSMON_CHANNEL!r}, "
+                f"not {self._channel!r}"
+            )
+        try:
+            ensure_sysmon(self._channel)
+        except BootstrapError as exc:
+            raise SourceError(str(exc)) from exc
+
+        etw_session, etw_provider = _etw_types()
+        self._computer = os.environ.get("COMPUTERNAME", "")
+        failure: Exception | None = None
+        for name in self._names():
+            session = etw_session(name)
+            session.add_provider(
+                etw_provider(SYSMON_PROVIDER_GUID, SYSMON_PROVIDER)
+                .level(_TRACE_LEVEL_INFORMATION)
+                .keywords_any(SYSMON_OPERATIONAL_KEYWORD)
+            )
+            try:
+                session.start()
+            except Exception as exc:
+                failure = exc
+                try:
+                    session.stop()
+                except Exception:
+                    pass
+                continue
+            self._session = session
+            break
+
+        if self._session is None:
+            raise SourceError(
+                "cannot start the Sysmon ETW trace session "
+                f"({type(failure).__name__}: {failure}). Consuming ETW requires an "
+                "elevated shell (Run as administrator) and a running Sysmon service."
+            )
+        if on_subscribe is not None:
+            on_subscribe()
+
+    def _names(self) -> Iterator[str]:
+        if self._session_name:
+            yield self._session_name
+            return
+        base = f"sigmatch-sysmon-{os.getpid()}"
+        yield base
+        # A stale session from a previous process with the same pid would make
+        # StartTrace fail; fall back to a unique name.
+        yield f"{base}-{int(time.time() * 1000) % 100000:05d}"
+
+    def close(self) -> None:
+        session, self._session = self._session, None
+        if session is None:
+            return
+        try:
+            session.stop()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    def __enter__(self) -> EtwSource:
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    # -- events ------------------------------------------------------------
+
+    def __iter__(self) -> Iterator[SysmonEvent]:
+        if self._session is None:
+            raise SourceError("EtwSource.start() must be called before iterating")
+
+        deadline = time.monotonic() + self._duration if self._duration else None
+
+        if self._backfill:
+            try:
+                for xml in query_backfill(self._channel, self._backfill, self._query):
+                    yield parse_event_any(xml)
+            except SourceError:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive
+                raise SourceError(f"backfill failed: {exc}") from exc
+
+        while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+
+            event = self._session.try_next_event()
+            if event is None:
+                # Non-blocking poll + Python sleep: time.sleep releases the GIL,
+                # next_event_timeout holds it for the whole timeout.
+                time.sleep(self._poll_interval)
+                continue
+
+            yield event_from_etw(
+                int(event.event_id),
+                getattr(event, "properties", None) or {},
+                _etw_timestamp(event),
+                channel=self._channel,
+                provider=getattr(event, "provider_name", None) or SYSMON_PROVIDER,
+                computer=self._computer,
+            )
+
+
+def _etw_timestamp(event) -> datetime | None:
+    stamp = getattr(event, "timestamp", None)
+    if isinstance(stamp, datetime):
+        return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+    nanos = getattr(event, "timestamp_ns", None)
+    if nanos:
+        return datetime.fromtimestamp(nanos / 1e9, timezone.utc)
+    return None
+
+
 def live_events(
     channel: str = SYSMON_CHANNEL,
     *,
@@ -76,83 +273,21 @@ def live_events(
     stop_event: threading.Event | None = None,
     duration: float | None = None,
     on_subscribe: Callable[[], None] | None = None,
-) -> Iterator[str]:
-    """Yield Sysmon event XML strings as they are written to the event log.
+) -> Iterator[SysmonEvent]:
+    """Yield live Sysmon events from the Sysmon ETW provider."""
 
-    A pull subscription (signal event + EvtNext) is used instead of a push
-    callback.  This avoids a lingering pywin32 callback thread and lets the
-    caller stop cleanly with a duration or stop event.  ``on_subscribe`` (if
-    given) runs once the event log subscription is active, just before the
-    first event is awaited.
-    """
-
+    source = EtwSource(
+        channel,
+        backfill=backfill,
+        query=query,
+        stop_event=stop_event,
+        duration=duration,
+    )
     try:
-        win32evtlog, win32event = ensure_pywin32()
-        ensure_sysmon(channel)
-    except BootstrapError as exc:  # pragma: no cover - Windows-only dependency
-        raise SourceError(str(exc)) from exc
-
-    signal = win32event.CreateEvent(None, 0, 0, None)
-    try:
-        subscription = win32evtlog.EvtSubscribe(
-            channel,
-            win32evtlog.EvtSubscribeToFutureEvents,
-            SignalEvent=signal,
-            Query=query,
-        )
-    except Exception as exc:
-        raise SourceError(
-            f"cannot subscribe to {channel!r}: {exc}. "
-            "Is Sysmon installed and is this shell elevated?"
-        ) from exc
-
-    if on_subscribe is not None:
-        on_subscribe()
-
-    deadline = time.monotonic() + duration if duration else None
-
-    if backfill:
-        try:
-            for xml in query_backfill(channel, backfill, query):
-                yield xml
-        except SourceError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive
-            raise SourceError(f"backfill failed: {exc}") from exc
-
-    while True:
-        if stop_event is not None and stop_event.is_set():
-            break
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            timeout_ms = max(1, min(500, int(remaining * 1000)))
-        else:
-            timeout_ms = 500
-
-        try:
-            win32event.WaitForSingleObjectEx(signal, timeout_ms, True)
-        except Exception as exc:  # pragma: no cover - defensive
-            raise SourceError(f"error waiting for event log notification: {exc}") from exc
-
-        # Query even when the wait timed out: depending on the pywin32 and
-        # Windows versions, EvtNext may return already-queued events without
-        # the signal event having been observed first.
-        while True:
-            try:
-                events = win32evtlog.EvtNext(subscription, 64, 0, 0)
-            except Exception as exc:
-                if _is_no_more_events(exc):
-                    break
-                raise SourceError(f"error reading subscribed events: {exc}") from exc
-            if not events:
-                break
-            for event in events:
-                yield _render(event)
-
-    # Keep references alive until the generator is closed.
-    _ = (signal, subscription)
+        source.start(on_subscribe=on_subscribe)
+        yield from source
+    finally:
+        source.close()
 
 
 def evtx_events(path: str | Path, query: str = "*") -> Iterator[str]:

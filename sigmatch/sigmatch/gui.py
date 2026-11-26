@@ -79,7 +79,11 @@ except ImportError as exc:  # pragma: no cover - depends on the installation
 
 
 from . import __version__
-from .events import EventParseError, SYSMON_CHANNEL, SysmonEvent, parse_event_any
+from .events import (
+    SYSMON_CHANNEL,
+    SysmonEvent,
+    render_event_xml,
+)
 from .rules import (
     LEVELS,
     LoadResult,
@@ -90,7 +94,7 @@ from .rules import (
     load_rules,
     rule_category,
 )
-from .sources import SourceError, live_events
+from .sources import EtwSource, SourceError
 
 
 # Rolling window of events that matched no rule.  Matched events are kept
@@ -513,13 +517,13 @@ def _rule_warning(outcome: LoaderOutcome) -> Problem | None:
 def _live_problem(exc: BaseException) -> Problem:
     text = str(exc)
     lowered = text.lower()
-    if "pywin32" in lowered or "win32event" in lowered:
+    if "pyetwkit" in lowered:
         return Problem(
-            "Windows event log support is missing.",
-            "Live Sysmon reading requires pywin32, and sigmatch could not install "
+            "ETW support is missing.",
+            "Live Sysmon reading requires pyetwkit, and sigmatch could not install "
             "it automatically. Install it manually and restart sigmatch.",
             "Technical details:" + chr(10) + text + chr(10) * 2
-            + "Install with: python -m pip install pywin32",
+            + "Install with: python -m pip install pyetwkit",
         )
     if "sysmon" in lowered and (
         "automatic" in lowered or "automatically" in lowered
@@ -538,8 +542,8 @@ def _live_problem(exc: BaseException) -> Problem:
         or ("elevat" in lowered and "denied" in lowered)
     ):
         return Problem(
-            "Access to the Sysmon event log was denied.",
-            "The Sysmon event log can only be read by administrators. "
+            "Access to the Sysmon ETW provider was denied.",
+            "Consuming the Sysmon ETW provider requires administrator rights. "
             "Restart sigmatch without --no-elevate and accept the elevation prompt. "
             "If this keeps happening, verify that the Sysmon service is running.",
             f"Technical details:\n{text}",
@@ -552,7 +556,7 @@ def _live_problem(exc: BaseException) -> Problem:
         or "could not be opened" in lowered
     ):
         return Problem(
-            "The Sysmon event log is not available.",
+            "The Sysmon ETW provider is not available.",
             "sigmatch could not open Microsoft-Windows-Sysmon/Operational. "
             "Install Sysmon, make sure its service (Sysmon64) is running, and check "
             "that Sysmon is configured to write to that event channel.",
@@ -784,19 +788,11 @@ class LiveMonitor(QObject):
         seen_records: OrderedDict[int, None] = OrderedDict()
         events = None
         try:
-            events = live_events(
-                self._channel,
-                stop_event=self._stop_event,
-                on_subscribe=self.started.emit,
-            )
-            for raw in events:
+            events = EtwSource(self._channel, stop_event=self._stop_event)
+            events.start(on_subscribe=self.started.emit)
+            for event in events:
                 if self._stop_event.is_set():
                     break
-                try:
-                    event = parse_event_any(raw)
-                except EventParseError as exc:
-                    self.parse_error.emit(str(exc))
-                    continue
 
                 if event.record_id is not None:
                     if event.record_id in seen_records:
@@ -1764,7 +1760,7 @@ class MainWindow(QMainWindow):
             "Live - waiting for Sysmon events on Microsoft-Windows-Sysmon/Operational."
         )
         live_tooltip = (
-            "sigmatch is subscribed to the Sysmon event log. This window never "
+            "sigmatch is consuming the Sysmon ETW provider. This window never "
             "stops on its own; close it to stop monitoring."
         )
         if self._banner.kind == "warning" and self._status_label.toolTip():
@@ -1914,7 +1910,7 @@ class MainWindow(QMainWindow):
             self._fields_view.setItem(index, 1, value_item)
 
         self._raw_view.setPlainText(
-            event.raw_xml or "(raw event XML is not available)"
+            event.raw_xml or render_event_xml(event)
         )
         self._details_stack.setCurrentIndex(1)
 

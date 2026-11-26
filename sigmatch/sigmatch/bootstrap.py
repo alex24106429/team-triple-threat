@@ -1,8 +1,10 @@
 """Automatically provision sigmatch's runtime dependencies.
 
-Live event reading needs ``pywin32`` and a running Sysmon service.  Instead of
-failing immediately when either is missing, this module installs/starts them
-on demand and only raises :class:`BootstrapError` when that is not possible.
+Live event reading needs ``pyetwkit`` (Sysmon ETW provider), ``pywin32``
+(EVTX replay and ``--backfill``) and a running Sysmon service.  Instead of
+failing immediately when any of them is missing, this module installs/starts
+them on demand and only raises :class:`BootstrapError` when that is not
+possible.
 """
 
 from __future__ import annotations
@@ -146,6 +148,83 @@ def ensure_pywin32() -> tuple[object, object]:
                 ) from first_error
 
     _pywin32_modules = modules
+    return modules
+
+
+# ---------------------------------------------------------------------------
+# pyetwkit (Sysmon ETW provider)
+# ---------------------------------------------------------------------------
+
+
+_pyetwkit_lock = threading.Lock()
+_pyetwkit_modules: tuple[object, object] | None = None
+_pyetwkit_install_attempted = False
+
+PYETWKIT_HELP = "Install it manually with: python -m pip install pyetwkit"
+
+PYETWKIT_REQUIREMENT = (
+    "pyetwkit is required to consume Sysmon ETW events. Prebuilt wheels exist "
+    "for 64-bit CPython 3.10-3.14; on older interpreters pip must build it from "
+    "source (Rust toolchain required)."
+)
+
+
+def _import_pyetwkit() -> tuple[object, object]:
+    from pyetwkit._core import EtwProvider, EtwSession  # type: ignore
+
+    return EtwSession, EtwProvider
+
+
+def _install_pyetwkit() -> None:
+    _log("pyetwkit is missing; installing it automatically...")
+    command = [sys.executable, "-m", "pip", "install", "pyetwkit"]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BootstrapError(
+            f"pyetwkit is required for live Sysmon events and could not be "
+            f"installed automatically ({type(exc).__name__}: {exc}). "
+            f"{PYETWKIT_REQUIREMENT} {PYETWKIT_HELP}"
+        ) from exc
+
+    if completed.returncode != 0:
+        output = _command_output(completed)
+        details = f": {output}" if output else ""
+        raise BootstrapError(
+            "pyetwkit is required for live Sysmon events and its automatic "
+            f"installation failed (pip exited with {completed.returncode}){details}. "
+            f"{PYETWKIT_REQUIREMENT} {PYETWKIT_HELP}"
+        )
+
+
+def ensure_pyetwkit() -> tuple[object, object]:
+    """Return ``(EtwSession, EtwProvider)``, installing pyetwkit if needed."""
+
+    global _pyetwkit_modules, _pyetwkit_install_attempted
+
+    if _pyetwkit_modules is not None:
+        return _pyetwkit_modules
+
+    try:
+        modules = _import_pyetwkit()
+    except ImportError as first_error:
+        with _pyetwkit_lock:
+            if _pyetwkit_modules is not None:
+                return _pyetwkit_modules
+            if not _pyetwkit_install_attempted:
+                _install_pyetwkit()
+                _pyetwkit_install_attempted = True
+                _refresh_import_paths()
+            try:
+                modules = _import_pyetwkit()
+            except ImportError as exc:
+                raise BootstrapError(
+                    "pyetwkit is required for live Sysmon events but is still not "
+                    f"usable after installation ({type(exc).__name__}: {exc}). "
+                    f"{PYETWKIT_REQUIREMENT} {PYETWKIT_HELP}"
+                ) from first_error
+
+    _pyetwkit_modules = modules
     return modules
 
 

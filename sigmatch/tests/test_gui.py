@@ -371,16 +371,16 @@ detection:
 
 def test_live_problem_guidance():
     denied = _live_problem(
-        SourceError("cannot subscribe: (5, 'EvtSubscribe', 'Access is denied.')")
+        SourceError("cannot start the Sysmon ETW trace session (Access is denied.)")
     )
     assert "Access" in denied.title
     assert "administrator" in denied.message.lower()
 
     missing_dependency = _live_problem(
-        SourceError("pywin32 is required for live/EVTX event reading.")
+        SourceError("pyetwkit is required for live Sysmon events.")
     )
-    assert "pywin32" in missing_dependency.message.lower()
-    assert "pip install pywin32" in missing_dependency.details
+    assert "pyetwkit" in missing_dependency.message.lower()
+    assert "pip install pyetwkit" in missing_dependency.details
 
     missing = _live_problem(SourceError("channel was not found"))
     assert "not available" in missing.title
@@ -672,9 +672,17 @@ def _sysmon_channel_readable() -> bool:
         return False
 
 
+def _etw_available() -> bool:
+    try:
+        import pyetwkit._core  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 @pytest.mark.skipif(
-    not is_admin() or not _sysmon_channel_readable(),
-    reason="live Sysmon access requires an elevated shell and Sysmon",
+    not is_admin() or not _sysmon_channel_readable() or not _etw_available(),
+    reason="live Sysmon ETW access requires an elevated shell, pyetwkit and Sysmon",
 )
 def test_live_window_end_to_end(qapp):
     live_rules = Path(__file__).resolve().parent / "live_rules"
