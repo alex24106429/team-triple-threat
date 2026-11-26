@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import fnmatch
 import hashlib
 import os
 import pickle
@@ -337,7 +336,7 @@ def _rule_file(path: Path) -> _RuleFile:
     return _RuleFile(path, info.st_mtime_ns, info.st_size)
 
 
-def _scan_rule_directory(root: Path) -> list[_RuleFile]:
+def _scan_rule_directory(root: Path, progress: callable | None = None) -> list[_RuleFile]:
     """Walk *root* with ``scandir`` and collect YAML files plus their stamps.
 
     ``Path.rglob`` is slower and, more importantly, the old loader called
@@ -359,9 +358,12 @@ def _scan_rule_directory(root: Path) -> list[_RuleFile]:
                             stack.append(entry.path)
                         elif entry.name.lower().endswith((".yml", ".yaml")):
                             info = entry.stat()
-                            files.append(
-                                _RuleFile(Path(entry.path), info.st_mtime_ns, info.st_size)
+                            record = _RuleFile(
+                                Path(entry.path), info.st_mtime_ns, info.st_size
                             )
+                            files.append(record)
+                            if progress is not None:
+                                progress(len(files), record.path)
                     except OSError:
                         # An unreadable/broken entry should not abort the scan.
                         continue
@@ -374,14 +376,24 @@ def _scan_rule_directory(root: Path) -> list[_RuleFile]:
     return files
 
 
-def _iter_rule_file_records(paths: Sequence[str | Path]) -> Iterator[_RuleFile]:
+def _iter_rule_file_records(
+    paths: Sequence[str | Path], progress: callable | None = None
+) -> Iterator[_RuleFile]:
     seen: set[str] = set()
     for raw_path in paths:
         path = Path(raw_path).expanduser()
+        base = len(seen)
         if path.is_file():
             records = [_rule_file(path)]
+            if progress is not None:
+                progress(base + 1, path)
         elif path.is_dir():
-            records = _scan_rule_directory(path)
+            if progress is None:
+                records = _scan_rule_directory(path)
+            else:
+                records = _scan_rule_directory(
+                    path, lambda count, item: progress(base + count, item)
+                )
         else:
             raise FileNotFoundError(f"rule path does not exist: {path}")
         for record in records:
@@ -392,9 +404,12 @@ def _iter_rule_file_records(paths: Sequence[str | Path]) -> Iterator[_RuleFile]:
             yield record
 
 
-def _iter_rule_files(paths: Sequence[str | Path]) -> Iterator[Path]:
-    for record in _iter_rule_file_records(paths):
-        yield record.path
+def discover_rule_records(
+    paths: Sequence[str | Path], progress: callable | None = None
+) -> list[_RuleFile]:
+    """Discover rule files once, reporting each file through *progress*."""
+
+    return list(_iter_rule_file_records(paths, progress))
 
 
 def _read_rule_file_texts(
@@ -580,17 +595,35 @@ def load_rules(
     progress: callable | None = None,
     use_cache: bool = True,
 ) -> LoadResult:
-    """Load every Sysmon-applicable rule under *paths*.
+    """Discover and load every Sysmon-applicable rule under *paths*.
 
     Compiled results are cached under the user's cache directory and validated
     with the rule files' size and nanosecond modification time.  Set
     ``use_cache=False`` (or ``SIGMATCH_RULE_CACHE=0``) to bypass the cache.
     """
 
+    return load_rule_records(
+        discover_rule_records(paths),
+        min_level=min_level,
+        statuses=statuses,
+        progress=progress,
+        use_cache=use_cache,
+    )
+
+
+def load_rule_records(
+    records: Sequence[_RuleFile],
+    *,
+    min_level: str | None = None,
+    statuses: Sequence[str] | None = None,
+    progress: callable | None = None,
+    use_cache: bool = True,
+) -> LoadResult:
+    """Compile already-discovered rule *records* (see :func:`discover_rule_records`)."""
+
     result = LoadResult()
     seen_ids: set[str] = set()
     allowed_statuses = {s.lower() for s in statuses} if statuses else None
-    records = list(_iter_rule_file_records(paths))
 
     cache_path: Path | None = None
     if records and _rule_cache_enabled(use_cache):
@@ -728,9 +761,3 @@ def rule_category(rule: Rule) -> str:
     return str(logsource.get("category") or logsource.get("service") or "generic")
 
 
-def selection_names(rule: Rule) -> list[str]:
-    return list(rule.selections)
-
-
-def pattern_matches(name: str, pattern: str) -> bool:
-    return fnmatch.fnmatchcase(name, pattern)

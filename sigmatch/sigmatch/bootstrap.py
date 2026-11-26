@@ -1,10 +1,9 @@
 """Automatically provision sigmatch's runtime dependencies.
 
-Live event reading needs ``pyetwkit`` (Sysmon ETW provider), ``pywin32``
-(EVTX replay and ``--backfill``) and a running Sysmon service.  Instead of
-failing immediately when any of them is missing, this module installs/starts
-them on demand and only raises :class:`BootstrapError` when that is not
-possible.
+Live event reading needs ``pyetwkit`` (Sysmon ETW provider) and a running
+Sysmon service.  Instead of failing immediately when either is missing, this
+module installs/starts them on demand and only raises :class:`BootstrapError`
+when that is not possible.
 """
 
 from __future__ import annotations
@@ -46,51 +45,6 @@ def _command_output(completed: subprocess.CompletedProcess[str]) -> str:
     return output
 
 
-# ---------------------------------------------------------------------------
-# pywin32
-# ---------------------------------------------------------------------------
-
-
-_pywin32_lock = threading.Lock()
-_pywin32_modules: tuple[object, object] | None = None
-_pywin32_install_attempted = False
-
-PYWIN32_HELP = "Install it manually with: python -m pip install pywin32"
-
-
-def _import_pywin32() -> tuple[object, object]:
-    import win32event  # type: ignore
-    import win32evtlog  # type: ignore
-
-    return win32evtlog, win32event
-
-
-def _install_pywin32() -> None:
-    _log("pywin32 is missing; installing it automatically...")
-    command = [sys.executable, "-m", "pip", "install", "pywin32"]
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise BootstrapError(
-            f"pywin32 is required for live/EVTX event reading and could not be "
-            f"installed automatically ({type(exc).__name__}: {exc}). {PYWIN32_HELP}"
-        ) from exc
-
-    if completed.returncode != 0:
-        output = _command_output(completed)
-        details = f": {output}" if output else ""
-        raise BootstrapError(
-            "pywin32 is required for live/EVTX event reading and its automatic "
-            f"installation failed (pip exited with {completed.returncode}){details}. "
-            f"{PYWIN32_HELP}"
-        )
-
-
 def _refresh_import_paths() -> None:
     """Apply newly installed site-packages entries without restarting Python."""
 
@@ -118,37 +72,6 @@ def _refresh_import_paths() -> None:
         except Exception:
             pass
     importlib.invalidate_caches()
-
-
-def ensure_pywin32() -> tuple[object, object]:
-    """Return ``(win32evtlog, win32event)``, installing pywin32 if needed."""
-
-    global _pywin32_modules, _pywin32_install_attempted
-
-    if _pywin32_modules is not None:
-        return _pywin32_modules
-
-    try:
-        modules = _import_pywin32()
-    except ImportError as first_error:
-        with _pywin32_lock:
-            if _pywin32_modules is not None:
-                return _pywin32_modules
-            if not _pywin32_install_attempted:
-                _install_pywin32()
-                _pywin32_install_attempted = True
-                _refresh_import_paths()
-            try:
-                modules = _import_pywin32()
-            except ImportError as exc:
-                raise BootstrapError(
-                    "pywin32 is required for live/EVTX event reading but is still "
-                    f"not usable after installation ({type(exc).__name__}: {exc}). "
-                    f"{PYWIN32_HELP}"
-                ) from first_error
-
-    _pywin32_modules = modules
-    return modules
 
 
 # ---------------------------------------------------------------------------

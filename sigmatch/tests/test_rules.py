@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sigmatch.rules as rules_module
-from sigmatch.events import parse_event_xml
+from sigmatch.events import event_from_etw
 from sigmatch.rules import (
     ALL_SYSMON_EVENT_IDS,
     CATEGORY_TO_SYSMON,
@@ -254,22 +255,15 @@ def test_real_sigma_rule_matches_crafted_events(real_sigma_result):
 
 def test_real_sigma_matches_process_event_object(real_sigma_result):
     result = real_sigma_result
-    event = parse_event_xml(
-        """<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
-  <System>
-    <Provider Name="Microsoft-Windows-Sysmon" />
-    <EventID>1</EventID>
-    <TimeCreated SystemTime="2026-11-16T13:45:12.1234567Z" />
-    <EventRecordID>1</EventRecordID>
-    <Channel>Microsoft-Windows-Sysmon/Operational</Channel>
-    <Computer>TESTHOST</Computer>
-  </System>
-  <EventData>
-    <Data Name="Image">C:\\Users\\Public\\notwhoami.exe</Data>
-    <Data Name="OriginalFileName">whoami.exe</Data>
-    <Data Name="CommandLine">notwhoami.exe /all</Data>
-  </EventData>
-</Event>"""
+    event = event_from_etw(
+        1,
+        {
+            "Image": r"C:\Users\Public\notwhoami.exe",
+            "OriginalFileName": "whoami.exe",
+            "CommandLine": "notwhoami.exe /all",
+        },
+        datetime(2026, 11, 16, 13, 45, 12, 123456, tzinfo=timezone.utc),
+        computer="TESTHOST",
     )
     ruleset = RuleSet(result.rules)
     matches = list(ruleset.match(event.event_id, event.lookup))

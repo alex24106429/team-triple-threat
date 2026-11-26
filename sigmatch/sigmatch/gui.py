@@ -14,7 +14,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
@@ -90,8 +89,9 @@ from .rules import (
     Rule,
     RuleSet,
     default_rule_paths,
+    discover_rule_records,
     expand_rule_paths,
-    load_rules,
+    load_rule_records,
     rule_category,
 )
 from .sources import EtwSource, SourceError
@@ -401,7 +401,6 @@ def load_application_icon() -> QIcon:
     """Load the custom sigmatch icon from source or installed package data."""
 
     package_dir = Path(__file__).resolve().parent
-    root = package_dir.parent
     icon = QIcon()
     candidates = (
         package_dir / "assets" / "icon.ico",
@@ -631,23 +630,9 @@ class RuleLoader(QObject):
         if not expanded:
             raise _RuleLoadFailure(_rule_discovery_problem(search_paths, [], []))
 
-        files: list[Path] = []
         load_paths: list[Path] = []
-        seen: set[str] = set()
         missing: list[Path] = []
         scan_errors: list[str] = []
-        last_progress = 0.0
-
-        def add_file(candidate: Path) -> None:
-            # Avoid Path.resolve() here: it performs a filesystem round-trip
-            # for every file and is extremely slow on network shares.  The
-            # normalised absolute path is enough to de-duplicate rule files.
-            key = os.path.normcase(os.path.abspath(str(candidate)))
-            if key in seen:
-                return
-            seen.add(key)
-            files.append(candidate)
-
         for path in expanded:
             self._check_cancelled()
             try:
@@ -658,43 +643,44 @@ class RuleLoader(QObject):
             if not exists:
                 missing.append(path)
                 continue
-            if path.is_file():
-                # An explicitly supplied file is always read, like the CLI.
-                add_file(path)
+            if path.is_file() or path.is_dir():
                 load_paths.append(path)
-                continue
-            if not path.is_dir():
+            else:
                 scan_errors.append(f"{path}: not a file or directory")
-                continue
-            load_paths.append(path)
 
-            def on_walk_error(exc: OSError) -> None:
-                scan_errors.append(f"{exc.filename or path}: {exc}")
+        last_progress = 0.0
 
-            for root, dirnames, filenames in os.walk(path, onerror=on_walk_error):
-                self._check_cancelled()
-                dirnames.sort(key=str.casefold)
-                for name in sorted(filenames, key=str.casefold):
-                    if name.lower().endswith((".yml", ".yaml")):
-                        add_file(Path(root) / name)
-                now = time.monotonic()
-                if now - last_progress >= 0.10:
-                    self.progress.emit(
-                        LoaderProgress("discovering", len(files), 0, str(root))
-                    )
-                    last_progress = now
+        def on_discover(count: int, path: Path) -> None:
+            nonlocal last_progress
+            self._check_cancelled()
+            now = time.monotonic()
+            if now - last_progress >= 0.10:
+                self.progress.emit(
+                    LoaderProgress("discovering", count, 0, str(path))
+                )
+                last_progress = now
 
-        files.sort(key=lambda item: str(item).casefold())
+        records = []
+        if load_paths:
+            try:
+                records = discover_rule_records(
+                    [str(item) for item in load_paths], progress=on_discover
+                )
+            except (FileNotFoundError, OSError) as exc:
+                scan_errors.append(str(exc))
+
+        files = [record.path for record in records]
         if not files:
             if missing and not scan_errors:
                 details = (
-                    "Searched paths:\n"
-                    f"{_paths_block(search_paths)}\n\n"
-                    "Those paths do not exist. Put the SigmaHQ repository at "
-                    "Z:\\sigma (or another location) and pass its path with --rules.\n\n"
-                    "Typical locations:\n"
-                    "  - <tool>\\sigma\\rules\n"
-                    "  - <tool>\\..\\sigma\\rules"
+                    "Searched paths:" + chr(10)
+                    + _paths_block(search_paths) + chr(10) * 2
+                    + "Those paths do not exist. Put the SigmaHQ repository at "
+                    + "Z:" + chr(92) + "sigma (or another location) and pass its path with --rules."
+                    + chr(10) * 2
+                    + "Typical locations:" + chr(10)
+                    + "  - <tool>" + chr(92) + "sigma" + chr(92) + "rules" + chr(10)
+                    + "  - <tool>" + chr(92) + ".." + chr(92) + "sigma" + chr(92) + "rules"
                 )
                 raise _RuleLoadFailure(
                     Problem(
@@ -723,14 +709,14 @@ class RuleLoader(QObject):
                 last_progress = now
 
         try:
-            result = load_rules([str(item) for item in load_paths], progress=on_progress)
+            result = load_rule_records(records, progress=on_progress)
         except (FileNotFoundError, OSError) as exc:
             raise _RuleLoadFailure(
                 Problem(
                     "The Sigma rules could not be read.",
                     "sigmatch found rule files but could not open them. "
                     "Check file permissions and make sure the rules directory is accessible.",
-                    f"Technical details:\n{type(exc).__name__}: {exc}",
+                    "Technical details:" + chr(10) + f"{type(exc).__name__}: {exc}",
                 )
             ) from exc
         self._check_cancelled()
@@ -738,14 +724,18 @@ class RuleLoader(QObject):
         if not result.rules:
             problem = _rule_problems_for_empty_result(search_paths, files)
             if result.errors:
-                details = problem.details + "\n\nRule errors:\n" + "\n".join(
-                    f"  - {error.path}: {error.message}"
-                    for error in result.errors[:20]
+                details = (
+                    problem.details + chr(10) * 2
+                    + "Rule errors:" + chr(10)
+                    + chr(10).join(
+                        f"  - {error.path}: {error.message}"
+                        for error in result.errors[:20]
+                    )
                 )
                 problem = Problem(problem.title, problem.message, details)
             raise _RuleLoadFailure(problem)
 
-        outcome = LoaderOutcome(
+        return LoaderOutcome(
             result=result,
             ruleset=RuleSet(result.rules),
             files=tuple(files),
@@ -753,7 +743,6 @@ class RuleLoader(QObject):
             missing_paths=tuple(missing),
             scan_errors=tuple(scan_errors),
         )
-        return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +755,6 @@ class LiveMonitor(QObject):
 
     started = pyqtSignal()
     event_found = pyqtSignal(object)
-    parse_error = pyqtSignal(str)
     failed = pyqtSignal(object)
     finished = pyqtSignal()
 
@@ -785,7 +773,6 @@ class LiveMonitor(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
-        seen_records: OrderedDict[int, None] = OrderedDict()
         events = None
         try:
             events = EtwSource(self._channel, stop_event=self._stop_event)
@@ -793,13 +780,6 @@ class LiveMonitor(QObject):
             for event in events:
                 if self._stop_event.is_set():
                     break
-
-                if event.record_id is not None:
-                    if event.record_id in seen_records:
-                        continue
-                    seen_records[event.record_id] = None
-                    if len(seen_records) > 100_000:
-                        seen_records.popitem(last=False)
 
                 matched = tuple(self._ruleset.match(event.event_id, event.lookup))
                 self.event_found.emit(
@@ -1275,7 +1255,6 @@ class MainWindow(QMainWindow):
         self._ruleset: RuleSet | None = None
         self._total_events = 0
         self._total_matches = 0
-        self._parse_errors = 0
         self._pending: list[LiveEventRow] = []
         self._loader_thread: QThread | None = None
         self._loader_worker: RuleLoader | None = None
@@ -1509,7 +1488,6 @@ class MainWindow(QMainWindow):
             tray.setContextMenu(menu)
             tray.messageClicked.connect(self._notification_clicked)
             self._tray = tray
-            self._tray_menu = menu
         except Exception:
             self._tray = None
             self._tray_available = False
@@ -1742,7 +1720,6 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.started.connect(self._live_started)
         worker.event_found.connect(self._queue_event)
-        worker.parse_error.connect(self._parse_error)
         worker.failed.connect(self._monitor_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -1798,10 +1775,6 @@ class MainWindow(QMainWindow):
                 if index not in drop
             ]
 
-    @pyqtSlot(str)
-    def _parse_error(self, _message: str) -> None:
-        self._parse_errors += 1
-
     def _flush_events(self) -> None:
         if self._closing:
             return
@@ -1841,8 +1814,6 @@ class MainWindow(QMainWindow):
             f"Rules {rules_text}  |  Events {_format_count(self._total_events)}  |  "
             f"Matches {_format_count(self._total_matches)}"
         )
-        if self._parse_errors:
-            text += f"  |  Parse errors {_format_count(self._parse_errors)}"
         if self._totals_label.text() != text:
             self._totals_label.setText(text)
         tooltip = (

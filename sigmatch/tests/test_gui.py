@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
-from sigmatch.events import parse_event_mapping, parse_event_xml
+from sigmatch.events import event_from_etw
 from sigmatch.gui import (
     EventTableModel,
     LiveEventRow,
@@ -50,23 +51,21 @@ detection:
   condition: selection
 """
 
-EVENT_XML = r"""<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
-  <System>
-    <Provider Name="Microsoft-Windows-Sysmon" />
-    <EventID>1</EventID>
-    <EventRecordID>4242</EventRecordID>
-    <TimeCreated SystemTime="2026-01-02T03:04:05.1234567Z" />
-    <Channel>Microsoft-Windows-Sysmon/Operational</Channel>
-    <Computer>TESTHOST</Computer>
-  </System>
-  <EventData>
-    <Data Name="Image">C:\Windows\System32\cmd.exe</Data>
-    <Data Name="CommandLine">cmd.exe /c echo gui_test</Data>
-    <Data Name="ParentImage">C:\Windows\explorer.exe</Data>
-    <Data Name="User">TESTHOST\win</Data>
-  </EventData>
-</Event>
-"""
+TS = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+
+
+def _event(event_id: int, **fields):
+    return event_from_etw(event_id, fields, TS, computer="TESTHOST")
+
+
+def _process_event():
+    return _event(
+        1,
+        Image=r"C:\Windows\System32\cmd.exe",
+        CommandLine="cmd.exe /c echo gui_test",
+        ParentImage=r"C:\Windows\explorer.exe",
+        User=r"TESTHOST\win",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -98,7 +97,7 @@ def _load(paths):
 
 
 def _row(event=None, rules=()) -> LiveEventRow:
-    event = event or parse_event_xml(EVENT_XML)
+    event = event or _process_event()
     return LiveEventRow(event=event, rules=tuple(rules), summary=event_summary(event))
 
 
@@ -106,7 +105,7 @@ def _matching_rules(tmp_path: Path) -> tuple:
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     ruleset = result["loaded"].ruleset
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     rules = tuple(ruleset.match(event.event_id, event.lookup))
     assert rules, result.get("failed")
     return rules
@@ -183,52 +182,35 @@ def test_banner_retry_and_dismiss(qapp):
 
 
 def test_event_summaries():
-    process = parse_event_mapping(
-        {
-            "EventID": 1,
-            "Image": r"C:\Windows\System32\cmd.exe",
-            "CommandLine": "cmd.exe /c whoami",
-        }
-    )
+    process = _event(1, Image=r"C:\Windows\System32\cmd.exe",
+            CommandLine="cmd.exe /c whoami")
     assert event_summary(process) == r"C:\Windows\System32\cmd.exe  cmd.exe /c whoami"
 
-    network = parse_event_mapping(
-        {
-            "EventID": 3,
-            "Image": r"C:\tools\agent.exe",
-            "DestinationIp": "192.0.2.10",
-            "DestinationPort": "443",
-        }
-    )
+    network = _event(3, Image=r"C:\tools\agent.exe",
+            DestinationIp="192.0.2.10",
+            DestinationPort="443")
     assert "agent.exe" in event_summary(network)
     assert "192.0.2.10:443" in event_summary(network)
 
-    registry = parse_event_mapping(
-        {
-            "EventID": 13,
-            "TargetObject": r"HKLM\Software\Test\Value",
-            "Details": "DWORD (0x00000001)",
-        }
-    )
+    registry = _event(13, TargetObject=r"HKLM\Software\Test\Value",
+            Details="DWORD (0x00000001)")
     assert "HKLM" in event_summary(registry)
     assert "DWORD" in event_summary(registry)
 
-    dns = parse_event_mapping(
-        {"EventID": 22, "QueryName": "example.test", "QueryResults": "192.0.2.1"}
-    )
+    dns = _event(22, QueryName="example.test", QueryResults="192.0.2.1")
     assert "example.test" in event_summary(dns)
     assert "192.0.2.1" in event_summary(dns)
 
-    empty = parse_event_mapping({"EventID": 99})
+    empty = _event(99)
     assert event_summary(empty) == "(no event data)"
 
 
 def test_table_model_rows_and_cap(qapp):
-    first = _row(parse_event_mapping({"EventID": 1, "Image": "one.exe"}))
+    first = _row(_event(1, Image="one.exe"))
     second = _row(
-        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+        _event(11, TargetFilename="C:/temp/x.txt")
     )
-    third = _row(parse_event_mapping({"EventID": 3, "Image": "three.exe"}))
+    third = _row(_event(3, Image="three.exe"))
     model = EventTableModel(max_rows=2)
     model.append_rows([first])
     model.append_rows([second, third])
@@ -244,10 +226,10 @@ def test_table_model_rows_and_cap(qapp):
 
 def test_table_model_keeps_matched_rows_when_trimming(qapp, tmp_path):
     rules = _matching_rules(tmp_path)
-    matched = _row(parse_event_xml(EVENT_XML), rules)
-    first = _row(parse_event_mapping({"EventID": 1, "Image": "one.exe"}))
-    second = _row(parse_event_mapping({"EventID": 11, "TargetFilename": "x.txt"}))
-    third = _row(parse_event_mapping({"EventID": 3, "Image": "three.exe"}))
+    matched = _row(_process_event(), rules)
+    first = _row(_event(1, Image="one.exe"))
+    second = _row(_event(11, TargetFilename="x.txt"))
+    third = _row(_event(3, Image="three.exe"))
     model = EventTableModel(max_rows=2)
     model.append_rows([matched, first])
     model.append_rows([second, third])
@@ -259,9 +241,9 @@ def test_table_model_keeps_matched_rows_when_trimming(qapp, tmp_path):
 
 def test_table_model_trim_keeps_matches_from_a_single_batch(qapp, tmp_path):
     rules = _matching_rules(tmp_path)
-    matched = _row(parse_event_xml(EVENT_XML), rules)
+    matched = _row(_process_event(), rules)
     incoming = [matched] + [
-        _row(parse_event_mapping({"EventID": 1, "Image": f"{name}.exe"}))
+        _row(_event(1, Image=f"{name}.exe"))
         for name in ("b", "c", "d", "e")
     ]
     model = EventTableModel(max_rows=2)
@@ -275,7 +257,7 @@ def test_table_model_trim_keeps_matches_from_a_single_batch(qapp, tmp_path):
 def test_table_model_matched_rows_safety_valve(qapp, tmp_path):
     rules = _matching_rules(tmp_path)
     matched = [
-        _row(parse_event_mapping({"EventID": 1, "Image": f"{name}.exe"}), rules)
+        _row(_event(1, Image=f"{name}.exe"), rules)
         for name in ("a", "b", "c")
     ]
     model = EventTableModel(max_rows=2, max_matched_rows=2)
@@ -288,12 +270,12 @@ def test_table_model_matched_rows_safety_valve(qapp, tmp_path):
 def test_overflow_indices_drops_oldest_unmatched_first(qapp):
     rules = ("rule",)
     rows = [
-        _row(parse_event_mapping({"EventID": 1, "Image": "0.exe"})),
-        _row(parse_event_mapping({"EventID": 1, "Image": "1.exe"}), rules),
-        _row(parse_event_mapping({"EventID": 1, "Image": "2.exe"})),
-        _row(parse_event_mapping({"EventID": 1, "Image": "3.exe"})),
-        _row(parse_event_mapping({"EventID": 1, "Image": "4.exe"}), rules),
-        _row(parse_event_mapping({"EventID": 1, "Image": "5.exe"})),
+        _row(_event(1, Image="0.exe")),
+        _row(_event(1, Image="1.exe"), rules),
+        _row(_event(1, Image="2.exe")),
+        _row(_event(1, Image="3.exe")),
+        _row(_event(1, Image="4.exe"), rules),
+        _row(_event(1, Image="5.exe")),
     ]
     # Two unmatched rows must go; the matches are untouched.
     assert _overflow_indices(rows, 2, 10) == {0, 2}
@@ -316,7 +298,7 @@ def test_loader_progress_and_match(qapp, tmp_path):
     assert loading[0].current == 0
     assert loading[-1].current == loading[-1].total == 1
 
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     matches = tuple(outcome.ruleset.match(event.event_id, event.lookup))
     assert [rule.title for rule in matches] == ["GUI Test Process Rule"]
 
@@ -394,7 +376,7 @@ def test_table_severity_styling(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     outcome = result["loaded"]
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
     model = EventTableModel()
     model.append_rows([_row(event, rules)])
@@ -457,11 +439,11 @@ def test_matched_only_filter(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     outcome = result["loaded"]
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
     matched = _row(event, rules)
     unmatched = _row(
-        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+        _event(11, TargetFilename="C:/temp/x.txt")
     )
 
     window = MainWindow([str(tmp_path)], auto_start=False)
@@ -486,7 +468,7 @@ def test_matched_only_filter(qapp, tmp_path):
         assert window._detail_header.text().startswith("Event 1 -")
 
         extra_unmatched = _row(
-            parse_event_mapping({"EventID": 12, "TargetObject": r"HKCU\Test"})
+            _event(12, TargetObject=r"HKCU\Test")
         )
         window._model.append_rows([extra_unmatched])
         qapp.processEvents()
@@ -505,7 +487,7 @@ def test_notifications_for_high_and_critical(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     outcome = result["loaded"]
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     high_rule = tuple(outcome.ruleset.match(event.event_id, event.lookup))[0]
     critical_rule = replace(high_rule, level="critical", title="Critical Test Rule")
     medium_rule = replace(high_rule, level="medium", title="Medium Test Rule")
@@ -544,11 +526,11 @@ def test_notification_click_selects_event(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     outcome = result["loaded"]
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
     matched = _row(event, rules)
     unmatched = _row(
-        parse_event_mapping({"EventID": 11, "TargetFilename": "C:/temp/x.txt"})
+        _event(11, TargetFilename="C:/temp/x.txt")
     )
 
     window = MainWindow([str(tmp_path)], auto_start=False)
@@ -572,7 +554,7 @@ def test_main_window_shows_event_details(qapp, tmp_path):
     _write_rule(tmp_path)
     result, _ = _load([tmp_path])
     outcome = result["loaded"]
-    event = parse_event_xml(EVENT_XML)
+    event = _process_event()
     rules = tuple(outcome.ruleset.match(event.event_id, event.lookup))
     row = _row(event, rules)
 

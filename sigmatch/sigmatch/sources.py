@@ -1,4 +1,4 @@
-"""Event sources: live Sysmon ETW consumption, .evtx files and replay.
+"""Live Sysmon event source (ETW).
 
 Live events come from the Sysmon ETW provider (pyetwkit).  The EventLog
 service publishes channel records in batches (hundreds of milliseconds),
@@ -7,19 +7,15 @@ while ETW delivers them as Sysmon writes them (~13 ms measured).
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import sys
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Callable, Iterator
 
 from .bootstrap import (
     BootstrapError,
-    ensure_pywin32,
     ensure_pyetwkit,
     ensure_sysmon,
 )
@@ -28,62 +24,11 @@ from .events import (
     SYSMON_PROVIDER,
     SysmonEvent,
     event_from_etw,
-    parse_event_any,
 )
 
 
 class SourceError(Exception):
     """Raised when an event source cannot be opened or read."""
-
-
-def _win32():
-    try:
-        win32evtlog, _ = ensure_pywin32()
-    except BootstrapError as exc:  # pragma: no cover - Windows-only dependency
-        raise SourceError(str(exc)) from exc
-    return win32evtlog
-
-
-def _render(event) -> str:
-    win32evtlog = _win32()
-    rendered = win32evtlog.EvtRender(event, win32evtlog.EvtRenderEventXml)
-    if isinstance(rendered, bytes):
-        return rendered.decode("utf-8", errors="replace")
-    return rendered
-
-
-def query_backfill(channel: str, count: int, query: str = "*") -> list[str]:
-    """Return up to *count* historical events, oldest first."""
-
-    if count <= 0:
-        return []
-    win32evtlog = _win32()
-    try:
-        handle = win32evtlog.EvtQuery(
-            channel,
-            win32evtlog.EvtQueryChannelPath | win32evtlog.EvtQueryReverseDirection,
-            query,
-        )
-    except Exception as exc:
-        raise SourceError(f"cannot query historical events from {channel!r}: {exc}") from exc
-    try:
-        events = win32evtlog.EvtNext(handle, count, 0, 0)
-    except Exception as exc:
-        if _is_no_more_events(exc):
-            return []
-        raise SourceError(f"cannot read historical events from {channel!r}: {exc}") from exc
-    return [_render(event) for event in reversed(tuple(events))]
-
-
-def _is_no_more_events(exc: Exception) -> bool:
-    winerror = getattr(exc, "winerror", None)
-    text = str(exc).lower()
-    return (
-        winerror in {259, 4317}
-        or "more items" in text
-        or "operation identifier is not valid" in text
-        or "no more data" in text
-    )
 
 
 SYSMON_PROVIDER_GUID = "{5770385F-C22A-43E0-BF4C-06F5698FFBD9}"
@@ -124,16 +69,12 @@ class EtwSource:
         self,
         channel: str = SYSMON_CHANNEL,
         *,
-        backfill: int = 0,
-        query: str = "*",
         stop_event: threading.Event | None = None,
         duration: float | None = None,
         poll_interval: float = ETW_POLL_INTERVAL,
         session_name: str | None = None,
     ) -> None:
         self._channel = channel
-        self._backfill = backfill
-        self._query = query
         self._stop_event = stop_event
         self._duration = duration
         self._poll_interval = poll_interval
@@ -223,15 +164,6 @@ class EtwSource:
 
         deadline = time.monotonic() + self._duration if self._duration else None
 
-        if self._backfill:
-            try:
-                for xml in query_backfill(self._channel, self._backfill, self._query):
-                    yield parse_event_any(xml)
-            except SourceError:
-                raise
-            except Exception as exc:  # pragma: no cover - defensive
-                raise SourceError(f"backfill failed: {exc}") from exc
-
         while True:
             if self._stop_event is not None and self._stop_event.is_set():
                 break
@@ -263,151 +195,3 @@ def _etw_timestamp(event) -> datetime | None:
     if nanos:
         return datetime.fromtimestamp(nanos / 1e9, timezone.utc)
     return None
-
-
-def live_events(
-    channel: str = SYSMON_CHANNEL,
-    *,
-    backfill: int = 0,
-    query: str = "*",
-    stop_event: threading.Event | None = None,
-    duration: float | None = None,
-    on_subscribe: Callable[[], None] | None = None,
-) -> Iterator[SysmonEvent]:
-    """Yield live Sysmon events from the Sysmon ETW provider."""
-
-    source = EtwSource(
-        channel,
-        backfill=backfill,
-        query=query,
-        stop_event=stop_event,
-        duration=duration,
-    )
-    try:
-        source.start(on_subscribe=on_subscribe)
-        yield from source
-    finally:
-        source.close()
-
-
-def evtx_events(path: str | Path, query: str = "*") -> Iterator[str]:
-    """Yield all events from an .evtx file, oldest first."""
-
-    win32evtlog = _win32()
-    try:
-        handle = win32evtlog.EvtQuery(str(path), win32evtlog.EvtQueryFilePath, query)
-    except Exception as exc:
-        raise SourceError(f"cannot open EVTX file {path!r}: {exc}") from exc
-
-    while True:
-        try:
-            events = win32evtlog.EvtNext(handle, 128, 0, 0)
-        except Exception as exc:
-            # pywin32 maps ERROR_NO_MORE_ITEMS / ERROR_INVALID_OPERATION from
-            # EvtNext to exceptions on some versions.  Both mean EOF here.
-            if _is_no_more_events(exc):
-                break
-            raise SourceError(f"error reading EVTX file {path!r}: {exc}") from exc
-        if not events:
-            break
-        for event in events:
-            yield _render(event)
-
-
-def _iter_json_array(items: Sequence[object]) -> Iterator[str]:
-    for item in items:
-        if isinstance(item, str):
-            yield item
-        else:
-            yield json.dumps(item, ensure_ascii=False)
-
-
-def replay_events(
-    path: str | Path | None,
-    *,
-    input_format: str = "auto",
-) -> Iterator[str]:
-    """Yield raw event documents from a replay file/stdin.
-
-    ``xml`` accepts one or more XML documents (line-oriented or pretty-printed).
-    ``json`` accepts a JSON array, a single JSON object, or newline-delimited
-    JSON objects.  ``auto`` detects XML vs JSON and JSON arrays vs NDJSON.
-    """
-
-    if path is None or str(path) == "-":
-        stream = sys.stdin
-        should_close = False
-    else:
-        stream = open(path, "r", encoding="utf-8-sig", errors="replace")
-        should_close = True
-
-    try:
-        if input_format == "xml":
-            content = stream.read()
-            # Split on complete </Event> boundaries so pretty-printed XML
-            # works as well as the usual one-line Get-WinEvent output.
-            for chunk in re.split(r"(?<=</Event>)", content):
-                if chunk.strip():
-                    yield chunk.strip()
-            return
-
-        if input_format in {"json", "jsonl", "ndjson"}:
-            content = stream.read()
-            stripped = content.lstrip()
-            if input_format != "ndjson" and stripped.startswith("["):
-                yield from _iter_json_array(json.loads(content))
-                return
-            for line in content.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    yield line
-            return
-
-        # auto: read enough to detect a JSON array, otherwise stream lines.
-        first = ""
-        while True:
-            char = stream.read(1)
-            if not char:
-                return
-            if not char.isspace():
-                first = char
-                break
-        if first == "[":
-            yield from _iter_json_array(json.loads(stream.read()))
-            return
-        if first == "<":
-            # XML documents can span lines; Sysmon's ToXml() normally emits a
-            # single line, so line-oriented replay is the pragmatic format.
-            pending = first
-            for line in stream:
-                pending += line
-                if pending.rstrip().endswith("</Event>"):
-                    yield pending.strip()
-                    pending = ""
-            if pending.strip():
-                yield pending.strip()
-            return
-
-        # JSON object(s): re-assemble the first character and stream lines.
-        line_buffer = first
-        for line in stream:
-            line_buffer += line
-            stripped = line_buffer.strip()
-            if stripped and stripped.startswith("{") and _json_complete(stripped):
-                yield stripped
-                line_buffer = ""
-            elif line_buffer.count("\n") > 1 and stripped and not stripped.startswith("{"):
-                line_buffer = ""
-        if line_buffer.strip():
-            yield line_buffer.strip()
-    finally:
-        if should_close:
-            stream.close()
-
-
-def _json_complete(text: str) -> bool:
-    try:
-        json.loads(text)
-        return True
-    except json.JSONDecodeError:
-        return False

@@ -10,8 +10,7 @@ alerts are emitted as text or JSONL.
 
 ## Features
 
-* Live Sysmon ETW consumption (`live`) with ~10-25 ms reaction time,
-  `.evtx` replay (`evtx`), and XML/JSON replay (`replay`).
+* Live Sysmon ETW consumption (`live`) with ~10-25 ms reaction time.
 * Loads `sigma/rules` (and optionally the emerging-threats, threat-hunting,
   compliance and DFIR collections).
 * Maps Sigma Windows logsource categories to Sysmon event IDs.
@@ -24,12 +23,9 @@ alerts are emitted as text or JSONL.
   `utf16*`, and `expand`.
 * Case-insensitive string matching by default; Sigma `*`/`?` wildcards and
   backslash escaping.
-* ETW events are normalised to the exact EventLog XML field form
-  (`GrantedAccess`/`LogonId` as `0x...` hex, braced GUIDs) so rules behave
-  identically on both paths.
-* Optional process-creation cache (`--enrich`) that adds
-  `CommandLine`/`ParentImage`/`ParentCommandLine` and source/target context to
-  events that do not carry those fields (Sigma "addon" fields).
+* ETW events are normalised to the EventLog XML field form
+  (`GrantedAccess`/`LogonId` as `0x...` hex, braced GUIDs) so Sigma rules see
+  the values they expect.
 * Optional PyQt6 desktop UI that follows the live feed, shows rule matches,
   and lets you inspect every event.
 
@@ -47,8 +43,7 @@ python -m pip install -e .
 
 Live reading needs `pyetwkit` (Sysmon ETW provider; prebuilt wheels for 64-bit
 CPython 3.10-3.14). If it is missing, sigmatch installs it automatically with
-pip. EVTX replay and `--backfill` additionally need `pywin32`, which is
-installed automatically the same way. If Sysmon is not installed, sigmatch downloads it from
+pip. If Sysmon is not installed, sigmatch downloads it from
 Microsoft Sysinternals, installs it with `config/sysmon-sigmatch.xml`, and
 starts the service. Those steps need administrator rights, and failures are
 reported with manual installation instructions.
@@ -116,35 +111,12 @@ Passing a Sigma repository root loads `rules` by default.  Add
 # Follow live events for 5 minutes, print human-readable alerts and stats
 python -m sigmatch live --rules Z:\sigma --duration 300 --stats
 
-# Include the last 200 events before following live and write JSONL alerts
-python -m sigmatch live --rules Z:\sigma --backfill 200 --format json `
+# Write JSONL alerts while following live events
+python -m sigmatch live --rules Z:\sigma --format json `
     --json-out Z:\alerts.jsonl
 
 # Only medium and above, stable/test rules
 python -m sigmatch live --min-level medium --status stable --status test
-
-# Add process-creation context to network/file/image events (Sigma addon fields)
-python -m sigmatch live --rules Z:\sigma --enrich --duration 300
-```
-
-### Replay an EVTX file
-
-```powershell
-wevtutil epl Microsoft-Windows-Sysmon/Operational Z:\sysmon.evtx
-python -m sigmatch evtx Z:\sysmon.evtx --rules Z:\sigma --format json --stats
-```
-
-### Replay XML or JSON
-
-```powershell
-# One or more Sysmon Event XML documents (the output of Get-WinEvent .ToXml())
-python -m sigmatch replay events.xml --input-format xml --rules Z:\sigma
-
-# NDJSON field objects, e.g. {"EventID":1,"Image":"...","CommandLine":"..."}
-python -m sigmatch replay events.ndjson --input-format ndjson --rules Z:\sigma
-
-# stdin, auto-detected
-Get-Content events.ndjson | python -m sigmatch replay - --rules Z:\sigma
 ```
 
 ### Validate the rule set
@@ -200,9 +172,8 @@ against all Sysmon events.
   conditions (`| count() > N`) are not applied.  The rules are evaluated as
   written against Sysmon field names.
 * Event 3 (network), 7 (image load), 10 (process access), etc. do not contain
-  process command lines by default.  Use `--enrich` if you want a process
-  cache to add those context fields.  Enrichment is opt-in because it changes
-  the meaning of rules that explicitly match a missing `CommandLine`.
+  process command lines by default.  Rules that require those context fields
+  only match events that carry them.
 * Rule coverage depends on the Sysmon configuration.  If a Sysmon event type
   is not enabled, no matching alert can be generated.
 * Sigma string matching is case-insensitive by default; use `|cased` for the
@@ -226,11 +197,6 @@ against all Sysmon events.
   No shipped SigmaHQ rule references that field.
 * `Security_UserID` comes from the EventLog XML header and is not part of the
   Sysmon ETW payload; no shipped rule references it either.
-* `--query` is an EventLog XPath filter, so it only applies to `--backfill`;
-  ETW has no equivalent and filtering happens after matching.
-* `--backfill N` reads recent history from the Sysmon event log (pywin32), then
-  switches to ETW.  Events written between session start and the backfill
-  query can appear twice.
 * The desktop UI reconstructs EventLog-style XML for ETW events in the raw
   view, because ETW events have no source XML document.
 
@@ -262,10 +228,10 @@ python -m pip install -r requirements.txt
 python -m pytest -q
 ```
 
-The test suite includes unit tests for matchers, condition parsing, XML
-parsing, the rule loader, and integration tests that replay synthetic Sysmon
-events through real SigmaHQ rules.  `tests/live_rules` contains a rule set used
-for manual end-to-end checks against a real Sysmon installation.
+The test suite includes unit tests for matchers, condition parsing, the ETW
+normaliser, the rule loader, and integration tests that validate rule sets.
+`tests/live_rules` contains a rule set used for manual end-to-end checks
+against a real Sysmon installation.
 
 Validation performed during development:
 
@@ -273,10 +239,7 @@ Validation performed during development:
   0 compile errors.
 * Extended collections (`rules-emerging-threats`, `rules-threat-hunting`,
   `rules-compliance`, `rules-dfir`): 2,256 rules, 0 compile errors.
-* 365 SigmaHQ EVTX regression samples (plus JSON samples) for Sysmon-compatible
-  rules matched with the expected counts (0 failures).
-* Sysmon 15.22 end-to-end tests (live subscription plus EVTX replay of the
-  captured log) matched event IDs 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 15, 16,
+* Sysmon 15.22 live end-to-end tests matched event IDs 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 15, 16,
   17, 18, 19, 20, 21, 22, 23, 24, 25, 27 and 29.
 * Event-ID mapping also covers 6 (driver load), 12, 14, 26, 28 and 255; those
   paths are exercised by unit tests and category mapping validation.

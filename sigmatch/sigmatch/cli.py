@@ -6,18 +6,11 @@ import argparse
 import json
 import sys
 import time
-from collections import Counter, OrderedDict
-from pathlib import Path
+from collections import Counter
 from typing import Iterable, Sequence
 
 from . import __version__
-from .events import (
-    EventParseError,
-    ProcessCache,
-    SYSMON_CHANNEL,
-    SysmonEvent,
-    parse_event_any,
-)
+from .events import SYSMON_CHANNEL, SysmonEvent
 from .rules import (
     LoadResult,
     Rule,
@@ -26,12 +19,7 @@ from .rules import (
     expand_rule_paths,
     load_rules,
 )
-from .sources import (
-    EtwSource,
-    SourceError,
-    evtx_events,
-    replay_events,
-)
+from .sources import EtwSource, SourceError
 
 TEXT_FIELDS = (
     "Image",
@@ -53,10 +41,6 @@ TEXT_FIELDS = (
     "User",
     "State",
 )
-
-
-def _default_rule_paths() -> list[Path]:
-    return default_rule_paths()
 
 
 def _flatten_rule_args(values: Sequence[Sequence[str]] | None) -> list[str]:
@@ -91,11 +75,6 @@ def _build_common_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="STATUS",
         help="Only load rules with this status (repeatable, e.g. stable, test).",
-    )
-    parser.add_argument(
-        "--enrich",
-        action="store_true",
-        help="Add CommandLine/Parent* fields from recent process-create events.",
     )
     parser.add_argument(
         "--format",
@@ -145,45 +124,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sysmon channel (ETW consumption is fixed to the Sysmon provider).",
     )
     live.add_argument(
-        "--query",
-        default="*",
-        help="Event Log XPath filter applied to --backfill only (default: *).",
-    )
-    live.add_argument(
-        "--backfill",
-        type=int,
-        default=0,
-        metavar="N",
-        help="Process the last N events from the Sysmon log before following live "
-        "ETW events (needs pywin32 and admin rights).",
-    )
-    live.add_argument(
         "--duration",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Stop after this many seconds.",
-    )
-
-    evtx = subparsers.add_parser(
-        "evtx",
-        parents=[common],
-        help="Process events from an .evtx file.",
-    )
-    evtx.add_argument("path", help="Path to .evtx file.")
-    evtx.add_argument("--query", default="*", help="Windows Event Log XPath query.")
-
-    replay = subparsers.add_parser(
-        "replay",
-        parents=[common],
-        help="Replay XML or JSON Sysmon events from a file or stdin.",
-    )
-    replay.add_argument("path", nargs="?", default="-", help="Input file (default: stdin).")
-    replay.add_argument(
-        "--input-format",
-        choices=["auto", "xml", "json", "ndjson"],
-        default="auto",
-        help="Replay input format (default: auto).",
     )
 
     subparsers.add_parser(
@@ -199,7 +144,7 @@ def _load(
 ) -> tuple[LoadResult, RuleSet, list[str]]:
     paths = _flatten_rule_args(args.rules)
     if not paths:
-        paths = [str(p) for p in _default_rule_paths()]
+        paths = [str(p) for p in default_rule_paths()]
     expanded = expand_rule_paths(paths, all_rule_sets=args.all_rule_sets)
     expanded_strings = [str(path) for path in expanded]
 
@@ -299,7 +244,7 @@ def _print_stats(
     print("[sigmatch] stats:", file=sys.stderr)
     print(
         f"  events={stats['events']} matches={stats['matches']} "
-        f"parse_errors={stats['parse_errors']} elapsed={elapsed:.2f}s",
+        f"elapsed={elapsed:.2f}s",
         file=sys.stderr,
     )
     if event_ids:
@@ -311,7 +256,7 @@ def _print_stats(
 
 
 def _run(
-    events: Iterable[str],
+    events: Iterable[SysmonEvent],
     ruleset: RuleSet,
     args: argparse.Namespace,
     *,
@@ -320,8 +265,6 @@ def _run(
     stats: Counter[str] = Counter()
     event_ids: Counter[int] = Counter()
     rule_counts: Counter[str] = Counter()
-    seen_records: OrderedDict[int, None] = OrderedDict()
-    process_cache = ProcessCache() if args.enrich else None
     started = time.monotonic()
     try:
         json_file = open(args.json_out, "a", encoding="utf-8") if args.json_out else None
@@ -330,27 +273,9 @@ def _run(
         return 2
 
     try:
-        for raw in events:
+        for event in events:
             if duration is not None and time.monotonic() - started >= duration:
                 break
-            try:
-                event = raw if isinstance(raw, SysmonEvent) else parse_event_any(raw)
-            except EventParseError as exc:
-                stats["parse_errors"] += 1
-                print(f"[sigmatch] parse error: {exc}", file=sys.stderr)
-                continue
-
-            if event.record_id is not None:
-                if event.record_id in seen_records:
-                    continue
-                seen_records[event.record_id] = None
-                if len(seen_records) > 100_000:
-                    seen_records.popitem(last=False)
-
-            if process_cache is not None:
-                process_cache.observe(event)
-                process_cache.enrich(event)
-
             stats["events"] += 1
             event_ids[event.event_id] += 1
             for rule in ruleset.match(event.event_id, event.lookup):
@@ -376,12 +301,7 @@ def _run(
 
 
 def _cmd_live(args: argparse.Namespace) -> int:
-    source = EtwSource(
-        args.channel,
-        backfill=args.backfill,
-        query=args.query,
-        duration=args.duration,
-    )
+    source = EtwSource(args.channel, duration=args.duration)
     try:
         # Start the trace session first: the ETW consumer drains buffers on its
         # own thread, so events written while rules are compiled are queued
@@ -396,32 +316,6 @@ def _cmd_live(args: argparse.Namespace) -> int:
         return 130
     finally:
         source.close()
-
-
-def _cmd_evtx(args: argparse.Namespace) -> int:
-    _, ruleset, _ = _load(args)
-    try:
-        return _run(evtx_events(args.path, query=args.query), ruleset, args)
-    except SourceError as exc:
-        print(f"[sigmatch] {exc}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        return 130
-
-
-def _cmd_replay(args: argparse.Namespace) -> int:
-    _, ruleset, _ = _load(args)
-    try:
-        return _run(
-            replay_events(args.path, input_format=args.input_format),
-            ruleset,
-            args,
-        )
-    except (SourceError, OSError) as exc:
-        print(f"[sigmatch] {exc}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        return 130
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -464,10 +358,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "live":
         return _cmd_live(args)
-    if args.command == "evtx":
-        return _cmd_evtx(args)
-    if args.command == "replay":
-        return _cmd_replay(args)
     if args.command == "validate":
         return _cmd_validate(args)
     parser.error(f"unknown command: {args.command}")

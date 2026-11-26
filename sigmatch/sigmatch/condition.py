@@ -260,8 +260,6 @@ class _ConditionParser:
             )
         if threshold == "all":
             threshold = len(names)
-        elif threshold == "any":
-            threshold = 1
         return OfNode(names, threshold)
 
 

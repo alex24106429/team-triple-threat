@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from sigmatch.events import (
     event_from_etw,
     normalize_etw_value,
-    parse_event_xml,
     render_event_xml,
 )
 from sigmatch.rules import RuleSet, load_rules
@@ -28,20 +27,6 @@ PROCESS_ACCESS_PROPS = {
     "SourceThreadId": 4264,
 }
 
-# The same event as written to Microsoft-Windows-Sysmon/Operational.
-PROCESS_ACCESS_XML = """<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>
-<Provider Name='Microsoft-Windows-Sysmon'/><EventID>10</EventID><EventRecordID>281957</EventRecordID>
-<TimeCreated SystemTime='2026-11-26T14:02:56.5632926Z'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel>
-<Computer>TESTHOST</Computer></System><EventData>
-<Data Name='RuleName'>-</Data><Data Name='UtcTime'>2026-11-26 14:02:56.560</Data>
-<Data Name='ProcessGuid'>{b75a7b4b-437b-6b08-bb0c-000000003f00}</Data>
-<Data Name='ProcessId'>5496</Data><Data Name='Image'>C:\\Windows\\System32\\taskmgr.exe</Data>
-<Data Name='TargetProcessGuid'>{b75a7b4b-437b-6b08-1f0c-000000003f00}</Data>
-<Data Name='TargetProcessId'>1121</Data><Data Name='GrantedAccess'>0x1410</Data>
-<Data Name='CallTrace'>C:\\Windows\\SYSTEM32\\ntdll.dll+9dab4|C:\\Windows\\SYSTEM32\\KERNELBASE.dll+28d3e</Data>
-<Data Name='SourceThreadId'>4264</Data></EventData></Event>"""
-
-
 def test_normalize_etw_value_hex_fields():
     assert normalize_etw_value("GrantedAccess", 5136) == "0x1410"
     assert normalize_etw_value("GrantedAccess", 0x1FFFFF) == "0x1fffff"
@@ -57,7 +42,7 @@ def test_normalize_etw_value_plain_ints_and_bools():
 def test_normalize_etw_value_braces_guids():
     guid = "b75a7b4b-437b-6b08-bb0c-000000003f00"
     assert normalize_etw_value("ProcessGuid", guid) == "{" + guid + "}"
-    # Already-braced values (e.g. from a JSON replay) are left alone.
+    # Already-braced values are left alone.
     assert normalize_etw_value("ProcessGuid", "{" + guid + "}") == "{" + guid + "}"
     # A GUID embedded in a larger string is not a GUID field.
     assert normalize_etw_value("CallTrace", "x|" + guid) == "x|" + guid
@@ -79,16 +64,14 @@ def test_event_from_etw_synthesises_metadata():
     assert event.get("UtcTime") == "2026-11-26 14:02:56.560"
 
 
-def test_etw_and_xml_agree_on_rule_fields():
-    """The ETW event must look exactly like the XML one to Sigma selectors."""
-
-    xml_event = parse_event_xml(PROCESS_ACCESS_XML)
-    etw_event = event_from_etw(10, PROCESS_ACCESS_PROPS, TS, computer="TESTHOST")
-    # EventRecordID is assigned by the EventLog service, not ETW.
-    assert set(xml_event.lookup) - set(etw_event.lookup) == {"eventrecordid"}
-    assert set(etw_event.lookup) - set(xml_event.lookup) == set()
-    for name, value in etw_event.lookup.items():
-        assert xml_event.lookup[name] == value, name
+def test_etw_normalisation_matches_eventlog_values():
+    event = event_from_etw(10, PROCESS_ACCESS_PROPS, TS, computer="TESTHOST")
+    assert event.get("ProcessGuid") == "{b75a7b4b-437b-6b08-bb0c-000000003f00}"
+    assert event.get("TargetProcessGuid") == "{b75a7b4b-437b-6b08-1f0c-000000003f00}"
+    assert event.get("GrantedAccess") == "0x1410"
+    assert event.get("ProcessId") == "5496"
+    assert event.get("TargetProcessId") == "1121"
+    assert event.get("CallTrace") == PROCESS_ACCESS_PROPS["CallTrace"]
 
 
 RULE = r"""title: ETW parity rule
@@ -106,8 +89,8 @@ detection:
 """
 
 
-def test_etw_event_matches_like_xml_event(tmp_path):
-    """A rule using GrantedAccess matches the ETW and XML encodings alike."""
+def test_etw_event_matches_rule(tmp_path):
+    """A rule using GrantedAccess matches the normalised ETW encoding."""
 
     rules_dir = tmp_path / "rules"
     rules_dir.mkdir()
@@ -118,24 +101,14 @@ def test_etw_event_matches_like_xml_event(tmp_path):
     etw_event = event_from_etw(10, props, TS)
     assert [r.title for r in ruleset.match(10, etw_event.lookup)] == ["ETW parity rule"]
 
-    xml = PROCESS_ACCESS_XML.replace(
-        "<Data Name='TargetProcessGuid'>",
-        r"<Data Name='TargetImage'>C:\Windows\System32\lsass.exe</Data>"
-        "<Data Name='TargetProcessGuid'>",
-    )
-    assert [r.title for r in ruleset.match(10, parse_event_xml(xml).lookup)] == [
-        "ETW parity rule"
-    ]
 
-
-def test_render_event_xml_round_trips():
+def test_render_event_xml():
     etw_event = event_from_etw(10, PROCESS_ACCESS_PROPS, TS, computer="TESTHOST")
     rendered = render_event_xml(etw_event)
     assert rendered.startswith("<Event ")
     assert "EventRecordID" not in rendered  # ETW has none
-    reparsed = parse_event_xml(rendered)
-    assert reparsed.event_id == 10
-    assert reparsed.data == etw_event.data
+    assert "<EventID>10</EventID>" in rendered
+    assert 'Name="CommandLine"' not in rendered
     assert 'Name="GrantedAccess"' in rendered and ">0x1410</Data>" in rendered
 
 

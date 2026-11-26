@@ -17,15 +17,11 @@ import os
 import re
 from functools import lru_cache
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 class RuleCompileError(Exception):
     """Raised when a rule (or one of its selections) cannot be compiled."""
-
-
-class UnsupportedModifier(RuleCompileError):
-    """Raised for a Sigma modifier this matcher does not implement."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +146,7 @@ def _utf16_transform(value: str, modifier: str) -> str:
         return raw.decode("latin-1")
     if modifier == "utf16be":
         return value.encode("utf-16be").decode("latin-1")
-    raise UnsupportedModifier(f"unknown utf16 modifier: {modifier}")
+    raise RuleCompileError(f"unknown utf16 modifier: {modifier}")
 
 
 def _base64_value(value: str) -> str:
@@ -474,7 +470,7 @@ def compile_value(field: str, raw_value: Any, modifiers: Sequence[str]) -> Value
     mods = [_normalise_modifier(m) for m in modifiers]
     unknown = [m for m in mods if m not in _KNOWN_MODIFIERS]
     if unknown:
-        raise UnsupportedModifier(f"unsupported Sigma modifier(s): {', '.join(unknown)}")
+        raise RuleCompileError(f"unsupported Sigma modifier(s): {', '.join(unknown)}")
 
     mods = [m for m in mods if m != "all"]
 
@@ -608,7 +604,7 @@ def _compile_keyword_matcher(value: Any, modifiers: Sequence[str]) -> KeywordMat
     mods = [_normalise_modifier(m) for m in modifiers]
     unknown = [m for m in mods if m not in _KNOWN_MODIFIERS and m not in {"all"}]
     if unknown:
-        raise UnsupportedModifier(f"unsupported keyword modifier(s): {', '.join(unknown)}")
+        raise RuleCompileError(f"unsupported keyword modifier(s): {', '.join(unknown)}")
     if "re" in mods:
         flags = re.IGNORECASE if "i" in mods else 0
         try:
@@ -625,37 +621,6 @@ def _compile_keyword_matcher(value: Any, modifiers: Sequence[str]) -> KeywordMat
         expand_env="expand" in mods,
     )
     return KeywordMatcher((pattern,))
-
-
-def compile_selection(name: str, value: Any) -> Selection:
-    """Compile one detection identifier into a Selection."""
-
-    if isinstance(value, dict):
-        return _compile_mapping_selection(value)
-    if isinstance(value, list):
-        # A list can be a list of mappings (OR), a list of strings (keyword
-        # selection), or a mixture of both.
-        if not value:
-            return Selection()
-        mapping_items = [item for item in value if isinstance(item, dict)]
-        string_items = [item for item in value if isinstance(item, (str, int, bool))]
-        if mapping_items and string_items:
-            raise RuleCompileError(f"selection {name!r} mixes mappings and scalar values")
-        if mapping_items:
-            raise RuleCompileError(
-                f"selection {name!r} is a list of mappings; use compile_detection_item()"
-            )
-        if string_items:
-            matchers = tuple(_compile_keyword_matcher(item, ()) for item in string_items)
-            combined = []
-            for matcher in matchers:
-                combined.extend(matcher.patterns)
-            return Selection(keyword_matcher=KeywordMatcher(tuple(combined)))
-        raise RuleCompileError(f"selection {name!r} contains unsupported values")
-    if isinstance(value, (str, int, bool)):
-        matcher = _compile_keyword_matcher(value, ())
-        return Selection(keyword_matcher=matcher)
-    raise RuleCompileError(f"selection {name!r} has unsupported type {type(value).__name__}")
 
 
 def _compile_mapping_selection(value: Mapping[str, Any]) -> Selection:
@@ -676,26 +641,47 @@ class SelectionGroup:
 def compile_detection_item(name: str, value: Any) -> SelectionGroup:
     """Compile a detection item, including OR-lists of mappings."""
 
-    if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
-        alternatives: list[Selection] = []
-        for item in value:
-            matchers = tuple(_compile_field_entry(key, val) for key, val in item.items())
-            alternatives.append(Selection(field_matchers=matchers))
-        return SelectionGroup(tuple(alternatives))
+    if isinstance(value, list):
+        if not value:
+            return SelectionGroup((Selection(),))
+        if all(isinstance(item, dict) for item in value):
+            return SelectionGroup(
+                tuple(_compile_mapping_selection(item) for item in value)
+            )
+        if any(isinstance(item, dict) for item in value):
+            alternatives: list[Selection] = []
+            for item in value:
+                if isinstance(item, dict):
+                    alternatives.append(_compile_mapping_selection(item))
+                elif isinstance(item, (str, int, bool)):
+                    alternatives.append(
+                        Selection(keyword_matcher=_compile_keyword_matcher(item, ()))
+                    )
+                else:
+                    raise RuleCompileError(
+                        f"selection {name!r} contains unsupported values"
+                    )
+            return SelectionGroup(tuple(alternatives))
 
-    if isinstance(value, list) and value and any(isinstance(item, dict) for item in value):
-        alternatives = []
+        if not all(isinstance(item, (str, int, bool)) for item in value):
+            raise RuleCompileError(f"selection {name!r} contains unsupported values")
+        # A list of scalars is a keyword selection whose entries are OR-linked.
+        patterns: list[re.Pattern[str]] = []
         for item in value:
-            if isinstance(item, dict):
-                matchers = tuple(_compile_field_entry(key, val) for key, val in item.items())
-                alternatives.append(Selection(field_matchers=matchers))
-            elif isinstance(item, (str, int, bool)):
-                alternatives.append(Selection(keyword_matcher=_compile_keyword_matcher(item, ())))
-            else:
-                raise RuleCompileError(f"selection {name!r} contains unsupported values")
-        return SelectionGroup(tuple(alternatives))
+            patterns.extend(_compile_keyword_matcher(item, ()).patterns)
+        return SelectionGroup(
+            (Selection(keyword_matcher=KeywordMatcher(tuple(patterns))),)
+        )
 
-    return SelectionGroup((compile_selection(name, value),))
+    if isinstance(value, dict):
+        return SelectionGroup((_compile_mapping_selection(value),))
+    if isinstance(value, (str, int, bool)):
+        return SelectionGroup(
+            (Selection(keyword_matcher=_compile_keyword_matcher(value, ())),)
+        )
+    raise RuleCompileError(
+        f"selection {name!r} has unsupported type {type(value).__name__}"
+    )
 
 
 def _compile_field_entry(key: str, raw_value: Any) -> FieldMatcher:
@@ -745,8 +731,3 @@ def match_sigma_string(
         ).search(value)
     )
 
-
-def values_to_patterns(value: str, **kwargs: Any) -> Iterable[re.Pattern[str]]:
-    """Expose compiled patterns for debugging/tests."""
-
-    yield compile_sigma_string(value, **kwargs)
