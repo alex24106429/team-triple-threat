@@ -14,7 +14,7 @@ Standard consumer antivirus tools (including default signature-based defenses) f
 
 **For whom:**
 
-Individual Windows users (e.g., freelancers, students, remote workers, journalists, or community organizers) who handle sensitive personal or client data and need protection against stealthy threats without needing deep forensic expertise.  
+Self-employed professionals (zzp'ers) in the Netherlands who use and manage their own Windows 11 computer for work, have limited cybersecurity knowledge, and do not have dedicated IT or cybersecurity support.
 
 **Why it matters:** A single undetected fileless intrusion or ransomware payload can permanently lock individuals or small organizations out of critical files, expose personal data, and cause severe financial or emotional harm. Conversely, aggressive automated deletion of unknown processes risks breaking legitimate software or operating system stability. Users need real-time containment that pauses suspicious execution safely and reversibly while translating technical forensics into clear, actionable choices.
 
