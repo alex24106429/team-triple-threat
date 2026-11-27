@@ -64,7 +64,6 @@ Self-employed professionals (zzp'ers) in the Netherlands who use and manage thei
     4. **Troubleshooting:** Able to identify and solve technical problems in software and hardware.  
     5. **Teamwork:** Experience working in Agile teams, using Scrum and dividing tasks across team members.  
 * **What we still need to learn:**  
-  - Safe and reliable Windows API usage (SDDL-restricted Named Pipes, WinVerifyTrust UI verification) without deadlocking critical system processes.  
   - Writing/tuning Sigma rules to balance detection coverage against false positives.  
   - Designing and evaluating deterministic vs. LLM-based triage (latency, hallucination control, confidence/uncertainty display).  
   - Conducting structured Design Thinking user interviews and comprehension/usability tests.
@@ -79,7 +78,7 @@ Per our Concept Review, full enterprise architecture is too large for 8 weeks. W
 | Sigma-based behavioral detection engine (focused rule subset) | Stateful cross-host/kernel injection graph engine |
 | Reversible containment via `NtSuspendProcess` before payload execution | Enterprise mTLS web dashboard & Ed25519-signed remote policies |
 | Sandboxed LLM forensic triage agent using strictly typed forensic RPCs (process tree, connections, persistence) | Automated cloud remediation / autonomous deletion without human approval |
-| Local UI (Named Pipe \+ Anti-Tamper PIN) showing AI explanation, confidence/limits, and Approve/Terminate/Resume controls | Non-Windows platforms (macOS / Linux) |
+| Local UI showing AI explanation, confidence/limits, and Approve/Terminate/Resume controls | Non-Windows platforms (macOS / Linux) |
 | Benchmarking in isolated VMs \+ user comprehension testing with real users | Production kernel-mode driver development |
 
 ### **Key Risks & Mitigations**
@@ -212,7 +211,7 @@ A purely deterministic (non-AI) rule engine like Sigma can detect and freeze a s
 ## **7\. Collaboration**
 
 * **Team Structure & Roles (3 Members):**  
-  - **Alex Wrobel:** Core Service & Containment Lead: Log ingestion, NtSuspendProcess/NtResumeProcess, Named Pipe/SDDL security, VM test lab.  
+  - **Alex Wrobel:** Core Service & Containment Lead: Log ingestion, NtSuspendProcess/NtResumeProcess, VM test lab.  
   - **Arber Deda:** Detection & Benchmarking Lead: Sigma rule curation, APTSimulator/Sharp-Suite evaluation, Chainsaw/baseline comparison.  
   - **Haki Abdulovski:** AI Triage & Explainability Lead: Low-privilege AI sandbox, typed forensic RPCs, prompt-injection safeguards, confidence/limit reporting.  
 * **Weekly Rhythm:**  
@@ -245,7 +244,7 @@ By the start of Week 15, we will deliver a **functional integrated MVP** inside 
 
 - Working EDR Core Service \+ Sigma detection \+ containment in an isolated Windows VM.  
 - Sandboxed AI triage agent connected via typed RPCs.  
-- Local desktop UI connected over an SDDL-restricted Named Pipe allowing a user to read the AI explanation (with uncertainty/limits) and click **Terminate** or **Resume**.  
+- Local desktop UI allowing a user to read the AI explanation (with uncertainty/limits) and click **Terminate** or **Resume**.  
 - Completed Design Thinking phases 1–3 (*Empathize, Define, Ideate*) documented on GitHub, plus a test plan for Weeks 15–17 user & detection evaluations.
 
 ### Mermaid
@@ -275,7 +274,7 @@ gantt
     section Core EDR & Containment (Alex)
     Provision isolated VMs (Sysmon + APTSimulator)    :         core1, 2026-11-16, 7d
     Sysmon ingestion & NtSuspendProcess containment   :         core2, 2026-11-23, 14d
-    Local Desktop UI (Named Pipe, SDDL & PIN)         :         core3, 2026-12-06, 7d
+    Local Desktop UI                                  :         core3, 2026-12-06, 7d
     Allowlists, stability hardening & bug fixes       :         core4, 2026-12-13, 21d
 
     section Detection & Benchmarking (Arber)
