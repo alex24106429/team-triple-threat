@@ -14,8 +14,7 @@ Standard consumer antivirus tools (including default signature-based defenses) f
 
 **For whom:**
 
-1. **Primary users:** Individual Windows users (e.g., freelancers, students, remote workers, journalists, or community organizers) who handle sensitive personal or client data and need protection against stealthy threats without needing deep forensic expertise.  
-2. **Secondary stakeholders:** Small IT/security teams or volunteer IT coordinators at resource-constrained organizations (e.g., SMBs, schools, non-profits) who need understandable endpoint triage.
+Individual Windows users (e.g., freelancers, students, remote workers, journalists, or community organizers) who handle sensitive personal or client data and need protection against stealthy threats without needing deep forensic expertise.  
 
 **Why it matters:** A single undetected fileless intrusion or ransomware payload can permanently lock individuals or small organizations out of critical files, expose personal data, and cause severe financial or emotional harm. Conversely, aggressive automated deletion of unknown processes risks breaking legitimate software or operating system stability. Users need real-time containment that pauses suspicious execution safely and reversibly while translating technical forensics into clear, actionable choices.
 
@@ -93,22 +92,98 @@ Per our Concept Review, full enterprise architecture is too large for 8 weeks. W
 
 ---
 
-## **4\. Users and Stakeholders**
+## 4. Users and Stakeholders
 
-### **Who They Are & What They Need**
+### Target Audience and Customer Segmentation
 
-* **Primary Users \- Everyday / Semi-Technical Windows Users:** Need silent protection against stealthy threats, clear non-jargon explanations of *why* something was paused, reassurance that nothing was permanently broken, and simple safe choices (*Resume*, *Terminate*, *Keep Paused*).  
-* **Secondary Stakeholders \- SMB / Non-Profit IT Admins & Security Advisors:** Need verifiable technical evidence (Sigma rule ID, process tree, persistence check), low false-positive rates, and confidence that the AI agent itself cannot be hijacked via prompt injection.  
-* **Indirect Stakeholders \- Software Developers / Legitimate App Vendors:** Affected if false positives wrongly flag benign developer scripts or updaters.
+Our initial target audience consisted of individual Windows users. However, this group was too broad because Windows users differ in their technical knowledge, responsibilities, behaviour, and cybersecurity needs.
 
-### **Research & Validation Methods (Design Thinking: Empathize & Test)**
+To narrow down our target audience, we use the Segmentation, Targeting and Positioning (STP) framework, focusing on firmographic, geographic, technographic, behavioural, and needs-based segmentation.
 
-1. **Stakeholder Map:** Map direct users, IT advisors, OS/defender ecosystem (Windows Defender), and potential attackers to clarify boundaries and responsibilities.  
-2. **Semi-Structured User Interviews (Weeks 11–13):** Interview **5–8 target Windows users** (plus **1–2 IT/security practitioners**) about past security scares, how they react to Windows Defender/antivirus pop-ups, whether they would install a companion EDR, and what makes them trust or ignore an alert.  
-3. **Personas & Empathy Maps (Week 12–13):** Synthesize interview findings into 1–2 grounded user personas (e.g., *Non-Technical Freelancer*, *Volunteer IT Coordinator*) to guide UI wording and containment UX.  
-4. **Comparative Comprehension & Usability Testing (Weeks 15–17):** Test interactive mockups and the working prototype by showing users (a) a raw Sigma/Sysmon alert vs. (b) our AI-explained alert, measuring comprehension, decision accuracy, and trust.
+| Segmentation type | Selected characteristics |
+|---|---|
+| Geographic | Based in the Netherlands |
+| Firmographic | Self-employed professionals without employees (zzp'ers) |
+| Technographic | Use and manage their own Windows 11 computer |
+| Behavioural | Regularly use email, download files, exchange client documents, and manage their own computer security |
+| Technical knowledge | Basic computer skills but limited cybersecurity knowledge |
+| Needs-based | Need understandable security alerts and guidance when suspicious activity is detected |
+| Resources | No dedicated IT department or ongoing professional cybersecurity support |
 
----
+### Primary Target Audience
+
+Our primary target audience consists of self-employed professionals in the Netherlands who use their own Windows 11 computer for work, have limited cybersecurity knowledge, and are responsible for their own computer security.
+
+Examples include freelance designers, photographers, translators, and independent administrative professionals who regularly work with client documents and digital information.
+
+These users are both potential customers and end users of our product.
+
+### Research and Justification
+
+According to the Dutch Central Bureau of Statistics (CBS):
+
+- 70% of surveyed self-employed professionals used the same devices for business and personal purposes in 2024.
+- 33% carried out ICT security activities entirely by themselves in 2024.
+- 24% reported experiencing a phishing or spoofing attack in 2024.
+- Only 7% had cybersecurity insurance in 2025.
+
+These findings suggest that cybersecurity is a relevant concern for self-employed professionals, particularly those who manage their own computer security.
+
+Furthermore, research involving more than 6,000 browser users identified misunderstandings surrounding security warnings. Although this research focuses on browser security, it provides supporting evidence for investigating whether clearer explanations can improve security-related decisions.
+
+Our AI-assisted EDR aims to address this problem by translating technical security alerts into understandable explanations and supporting users in making informed decisions about suspicious activity.
+
+The desk research supports our initial target audience selection, but the specific need for an AI-assisted EDR must still be validated through user interviews and prototype testing.
+
+### Expected User Needs
+
+Based on our initial research, we expect our target audience to need:
+
+- Clear security alerts without unnecessary technical terminology.
+- An explanation of why an activity is considered suspicious.
+- Guidance on what action to take and the possible consequences.
+- Protection that minimises unnecessary interruptions to their work.
+- Reversible containment to reduce the risk of losing unsaved work.
+- Transparency about AI-generated explanations and their limitations.
+- Protection of personal and client information.
+
+These expected needs will be validated through interviews.
+
+### Secondary Stakeholders
+
+- **Clients of self-employed professionals:** Indirectly benefit from improved protection of their personal and business information.
+- **IT and cybersecurity professionals:** Provide expert feedback on the technical reliability and safety of the product.
+- **Software developers and vendors:** May be affected if legitimate applications are incorrectly flagged as suspicious.
+
+### Out-of-Scope User Groups
+
+For the MVP, we do not specifically target:
+
+- Enterprise organisations with dedicated security teams.
+- Employees using company-managed computers.
+- Cybersecurity professionals as primary end users.
+- macOS and Linux users.
+
+### Research & Validation Methods
+
+1. **Stakeholder Map:** Identify the relationships between our target users, their clients, cybersecurity professionals, and existing security providers.
+
+2. **Semi-Structured Interviews (Weeks 12–14):** Interview 5–8 self-employed professionals who match our target audience and 1–2 cybersecurity practitioners. Investigate their current security practices, experiences with security alerts, technical knowledge, and willingness to use an additional security tool.
+
+3. **Personas & Empathy Maps (Weeks 13–14):** Create user personas and empathy maps based on actual interview findings.
+
+4. **Comparative Usability Testing (Weeks 15–17):** Compare a traditional technical security alert with our AI-assisted security alert. Evaluate user comprehension, decision accuracy, ease of use, and appropriate trust in AI-generated explanations.
+
+5. **Evaluation:** Use the research and testing results to determine whether our solution addresses the needs of our selected target audience.
+
+### References
+
+- [CBS – Cybersecuritymonitor 2025: Cybersecurity measures](https://dashboards.cbs.nl/longreads/2026/cybersecuritymonitor-2025/cybersecuritymaatregelen.html)
+- [CBS – Cybersecuritymonitor 2025: Cybersecurity incidents](https://dashboards.cbs.nl/longreads/2026/cybersecuritymonitor-2025/cybersecurityincidenten.html)
+- [CBS – ICT use among self-employed professionals, 2025](https://www.cbs.nl/nl-nl/cijfers/detail/86121NED)
+- [OpenStax – Market Segmentation and Consumer Markets](https://openstax.org/books/principles-marketing/pages/5-1-market-segmentation-and-consumer-markets)
+- [OpenStax – Segmentation of B2B Markets](https://openstax.org/books/principles-marketing/pages/5-2-segmentation-of-b2b-markets)
+- [An Experience Sampling Study of User Reactions to Browser Warnings in the Field](https://research.google/pubs/an-experience-sampling-study-of-user-reactions-to-browser-warnings-in-the-field/)
 
 ## **5\. Why AI?**
 
@@ -174,25 +249,43 @@ By the start of Week 15, we will deliver a **functional integrated MVP** inside 
 - Local desktop UI connected over an SDDL-restricted Named Pipe allowing a user to read the AI explanation (with uncertainty/limits) and click **Terminate** or **Resume**.  
 - Completed Design Thinking phases 1–3 (*Empathize, Define, Ideate*) documented on GitHub, plus a test plan for Weeks 15–17 user & detection evaluations.
 
-### **Step-by-Step Schedule for the Next Three Weeks**
+### Mermaid
 
-* **Week 11 (Empathize & Architecture Setup):**  
-  - Finalize team roles, set up GitHub repository structure (code \+ Design Thinking docs), and provision isolated Windows test VMs (Sysmon \+ APTSimulator).  
-  - Submit Draft Project Plan (Thursday) and review open scope/ethics questions with supervisor (Friday).  
-  - Draft interview guide and recruit 5–8 Windows users \+ 1–2 IT advisors.  
-* **Week 12 (Define, Ideate & Final Plan):**  
-  - Conduct user/IT interviews; synthesize findings into problem definition, personas, and empathy map.  
-  - Explore and document at least 3 UX/AI triage alternatives (e.g., deterministic templates vs. local LLM vs. cloud sandboxed LLM) before locking V1 architecture.  
-  - Submit Final Project Plan \+ deliver 5-minute pitch (Thursday).  
-* **Week 13 (Early Prototype & Mid-Term Review):**  
-  - Build V1 pipeline: Sysmon \-\> Sigma match \-\> `NtSuspendProcess` \-\> typed forensic RPC \-\> AI explanation output.  
-  - Run initial APTSimulator & Sharp-Suite tests to verify freeze reliability and false-positive behavior.  
-  - Prepare early prototype demo, initial user research insights, and feedback questions for the Mid-Term Progress Meeting (Week 13 or 14).
+```mermaid
+gantt
+    title Project Plan - AI-Assisted Windows EDR (Weeks 11-18)
+    dateFormat  YYYY-MM-DD
+    axisFormat  W%W
 
----
+    section Milestones & Deliverables
+    Repo setup, roles & Draft Plan (W11)              :done,    m1, 2026-11-16, 4d
+    Draft Project Plan submission (Thu W11)           :milestone,   2026-11-19, 0d
+    Final Project Plan & 5-min pitch (Thu W12)        :milestone,   2026-11-26, 0d
+    V1 prototype & Mid-Term Review (W13-W14)          :         m2, 2026-11-30, 14d
+    Functional integrated MVP due (Start W15)         :milestone,   2026-12-13, 0d
+    Final documentation, polish & Week 18 demo        :         m3, 2027-01-04, 5d
+    Final MVP Demo (W18)                              :milestone,   2027-01-08, 0d
 
-## **Appendix: Open Questions for Supervisor (Week 11/12 Review)**
+    section Design Thinking & User Testing (All)
+    Interview guide & user/IT recruitment             :         dt1, 2026-11-16, 7d
+    Semi-structured user & IT interviews (5-8 + 1-2)  :         dt2, 2026-11-19, 18d
+    Personas, empathy map & 3 UX/AI alternatives      :         dt3, 2026-11-23, 14d
+    Finalize DT Phases 1-3 & evaluation test plan     :         dt4, 2026-12-06, 7d
+    Comparative comprehension & usability testing     :         dt5, 2026-12-13, 21d
 
-1. Are there any institutional restrictions on testing benign attack-simulation tools (APTSimulator / Sharp-Suite) on personal laptops inside isolated local VMs?  
-2. For our Week 15–18 user impact tests, is evaluating user comprehension and decision accuracy via realistic simulated alerts in a controlled VM sufficient (given we cannot expose real users to live malware)?  
-3. Do you recommend prioritizing a local quantized LLM (stronger privacy, higher hardware requirement) or a cloud LLM with stripped/anonymized RPC telemetry (lower latency/better reasoning) for the 8-week MVP?
+    section Core EDR & Containment (Alex)
+    Provision isolated VMs (Sysmon + APTSimulator)    :         core1, 2026-11-16, 7d
+    Sysmon ingestion & NtSuspendProcess containment   :         core2, 2026-11-23, 14d
+    Local Desktop UI (Named Pipe, SDDL & PIN)         :         core3, 2026-12-06, 7d
+    Allowlists, stability hardening & bug fixes       :         core4, 2026-12-13, 21d
+
+    section Detection & Benchmarking (Arber)
+    Curate 5-10 Sigma rules (LOLBAS / injection)      :         det1, 2026-11-23, 14d
+    Initial APTSimulator & Sharp-Suite tests          :         det2, 2026-11-30, 7d
+    Benchmark vs Chainsaw & MalwareBazaar (air-gap)   :         det3, 2026-12-06, 28d
+
+    section AI Triage & Explainability (Haki)
+    Typed forensic RPCs & sandboxed LLM V1 script     :         ai1, 2026-11-23, 14d
+    Prompt-injection guards, confidence & limits UI   :         ai2, 2026-12-06, 7d
+    AI accuracy/latency benchmark & prompt tuning     :         ai3, 2026-12-13, 21d
+```
