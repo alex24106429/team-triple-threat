@@ -10,7 +10,7 @@
 
 **What problem:** Modern cyberattacks increasingly rely on stealthy, "fileless" techniques-such as process hollowing, DLL/APC injection, and abuse of legitimate Windows tools ("Living off the Land" binaries/scripts like PowerShell, cmd, or mshta, known as LOLBAS)-to steal data or deploy ransomware without dropping traditional malware files onto disk. 
 
-Standard consumer antivirus tools (including default signature-based defenses) frequently miss or detect these behaviors too late, while enterprise Endpoint Detection and Response (EDR) tools are too expensive, complex, and noisy for non-specialists. When low-level alerts do appear, raw telemetry (e.g., process IDs, registry paths, Sysmon event codes, Sigma rule matches) is incomprehensible to non-technical users, leaving them unable to judge whether an alert is real or what safe action to take.
+Standard consumer antivirus tools (including default signature-based defenses) frequently miss or detect these behaviors too late, Although commercial EDR solutions are available to small businesses, they may still present barriers for self-employed professionals in terms of cost, complexity, licensing requirements, and the technical knowledge needed to interpret security alerts.
 
 **For whom:**
 
@@ -27,7 +27,7 @@ Individual Windows users (e.g., freelancers, students, remote workers, journalis
 
 ## **2\. Relation to the Sustainable Development Goals (SDGs)**
 
-* **Primary SDG \- SDG 9 (Industry, Innovation and Infrastructure):** *Build resilient infrastructure, promote inclusive and sustainable industrialization and foster innovation.* Reliable, accessible cybersecurity is foundational to resilient digital infrastructure. Commercial EDR platforms price out individuals and small organizations; this project lowers that barrier by combining open detection standards (Sysmon, Sigma) with AI-assisted explanation.  
+* **Primary SDG \- SDG 9 (Industry, Innovation and Infrastructure):** *Build resilient infrastructure, promote inclusive and sustainable industrialization and foster innovation.* Reliable, accessible cybersecurity is foundational to resilient digital infrastructure. Commercial EDR platforms may present financial and technical barriers for self-employed professionals. This project aims to lower these barriers by combining open detection standards (Sysmon, Sigma) with understandable AI-assisted explanations. 
 * **Secondary SDG \- SDG 16 (Peace, Justice and Strong Institutions):** *Promote peaceful and inclusive societies and build effective, accountable institutions.* Reducing successful ransomware, credential theft, and covert endpoint compromise helps protect citizens, students, and small civic/non-profit groups from digital crime and exploitation.
 
 **Who benefits:** Individual Windows users and small, under-resourced organizations gain enterprise-grade behavioral containment and plain-language security guidance-reducing the digital safety gap between large corporations with Security Operations Centers (SOCs) and everyday computer users.
