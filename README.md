@@ -8,9 +8,9 @@
 
 ## **1\. Problem Statement**
 
-**What problem:** Modern cyberattacks increasingly rely on stealthy, "fileless" techniques-such as process hollowing, DLL/APC injection, and abuse of legitimate Windows tools ("Living off the Land" binaries/scripts like PowerShell, cmd, or mshta, known as LOLBAS)-to steal data or deploy ransomware without dropping traditional malware files onto disk. 
+**What problem:** Modern cyberattacks increasingly rely on stealthy, "fileless" techniques-such as process hollowing, DLL/APC injection, and abuse of legitimate Windows tools ("Living off the Land" binaries/scripts like PowerShell, cmd, or mshta, known as LOLBAS)-to steal data or deploy ransomware without dropping traditional malware files onto disk.
 
-Standard consumer antivirus tools (including default signature-based defenses) frequently miss or detect these behaviors too late, Although commercial EDR solutions are available to small businesses, they may still present barriers for self-employed professionals in terms of cost, complexity, licensing requirements, and the technical knowledge needed to interpret security alerts.
+Traditional signature-based malware detection may struggle to identify fileless attacks. Although modern antivirus solutions also use behavioural detection, some suspicious activities can remain difficult to identify and interpret. Commercial EDR solutions are available to small businesses, but they may still present barriers for self-employed professionals in terms of cost, complexity, licensing requirements, and the technical knowledge needed to interpret security alerts.
 
 **For whom:**
 
@@ -21,8 +21,7 @@ Self-employed professionals (zzp'ers) in the Netherlands who use and manage thei
 **Evidence:**
 
 - Technical threat landscape evidence: Publicly documented attack frameworks and benchmarks (LOLBAS project, Sigma detection rules, APTSimulator, Sharp-Suite) demonstrate how easily standard Windows utilities are abused for memory injection and persistence.  
-- Current validation gap (to be addressed in Weeks 11–14): While the technical threat is well-documented, we have not yet conducted interviews with everyday Windows users or IT coordinators. A core assumption we must validate early is whether everyday users want and will adopt a lightweight companion EDR alongside Windows Defender, and whether freezing processes with AI explanations genuinely improves comprehension and trust.
-
+- Current validation gap (to be addressed in Weeks 11–14): While cybersecurity risks are documented, we have not yet conducted interviews with our selected target audience. We must validate whether self-employed professionals with limited cybersecurity knowledge would use an additional EDR alongside Microsoft Defender Antivirus, and whether AI-assisted explanations improve their understanding of security alerts and help them make informed decisions.
 ---
 
 ## **2\. Relation to the Sustainable Development Goals (SDGs)**
@@ -30,7 +29,7 @@ Self-employed professionals (zzp'ers) in the Netherlands who use and manage thei
 * **Primary SDG \- SDG 9 (Industry, Innovation and Infrastructure):** *Build resilient infrastructure, promote inclusive and sustainable industrialization and foster innovation.* Reliable, accessible cybersecurity is foundational to resilient digital infrastructure. Commercial EDR platforms may present financial and technical barriers for self-employed professionals. This project aims to lower these barriers by combining open detection standards (Sysmon, Sigma) with understandable AI-assisted explanations. 
 * **Secondary SDG \- SDG 16 (Peace, Justice and Strong Institutions):** *Promote peaceful and inclusive societies and build effective, accountable institutions.* Reducing successful ransomware, credential theft, and covert endpoint compromise helps protect citizens, students, and small civic/non-profit groups from digital crime and exploitation.
 
-**Who benefits:** Individual Windows users and small, under-resourced organizations gain enterprise-grade behavioral containment and plain-language security guidance-reducing the digital safety gap between large corporations with Security Operations Centers (SOCs) and everyday computer users.
+**Who benefits:** Self-employed professionals with limited cybersecurity knowledge benefit from more accessible security alerts and decision-making support. Their clients may also indirectly benefit from improved protection of personal and business information. The project aims to reduce the gap between professional cybersecurity solutions and the resources available to independent professionals.
 
 ---
 
